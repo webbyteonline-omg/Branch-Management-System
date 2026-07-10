@@ -7,7 +7,7 @@ import type { Range, Product, Settings } from "../lib/types";
 import { sum, topItems, shortBranch, live, deletedOnly, computeStock, type SharedProps } from "./shared";
 import { Modal } from "./Modal";
 import { toast } from "./Toast";
-import { ChangePasswordModal, ResetStaffPassword } from "./Account";
+import { ChangePasswordModal, ResetStaffPassword, StaffManager } from "./Account";
 import { saveProduct, softDelete, restoreRow, saveSettings } from "../lib/writes";
 
 type View = "dashboard" | "branch" | "customers" | "purchases" | "inventory" | "daybook" | "reports" | "settings";
@@ -98,7 +98,7 @@ export function Owner(p: SharedProps) {
           {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} />}
           {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={range} />}
           {view === "reports" && <ReportsPage rSales={rSales} range={range} />}
-          {view === "settings" && <SettingsPage prodAll={prodAll} online={p.online} settings={settings} onSync={p.onSync} />}
+          {view === "settings" && <SettingsPage prodAll={prodAll} online={p.online} settings={settings} onSync={p.onSync} branches={branches} />}
         </div>
       </div>
     </div>
@@ -400,7 +400,7 @@ function ReportsPage({ rSales, range }: any) {
 }
 
 /* ---------- settings ---------- */
-function SettingsPage({ prodAll, online, settings, onSync }: any) {
+function SettingsPage({ prodAll, online, settings, onSync, branches }: any) {
   const [edit, setEdit] = useState<Partial<Product> | null>(null);
   const [showDeleted, setShowDeleted] = useState(false);
   const [co, setCo] = useState<Settings>(settings ?? { id: "main", company: "", address: "", phone: "", gstin: "", footer: "" });
@@ -477,8 +477,10 @@ function SettingsPage({ prodAll, online, settings, onSync }: any) {
         <ResetStaffPassword />
       </div>
 
-      <div className="card card-pad" style={{ marginTop: 16 }}><h3 style={{ margin: "0 0 8px" }}>Staff accounts</h3>
-        <p style={{ color: "var(--muted)", fontSize: 13.5, margin: 0 }}>Add or remove staff in Supabase → Authentication, setting their <b>name</b>, <b>role</b> and <b>branch_id</b> in user metadata. They sign in with their User ID + password. Branch-level access is enforced by the database (RLS).</p></div>
+      <div className="card card-pad" style={{ marginTop: 16 }}>
+        <StaffManager branches={branches} />
+        <p style={{ color: "var(--muted)", fontSize: 12.5, margin: "12px 0 0" }}>Adding staff needs the <b>admin-create-staff</b> Edge Function deployed (see DEPLOY.md). Branch-level access is enforced by the database (RLS).</p>
+      </div>
 
       {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
       {edit && (
