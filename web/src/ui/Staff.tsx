@@ -5,6 +5,7 @@ import { Icon } from "../lib/icons";
 import { money, dateStr, timeStr, rangeStart } from "../lib/format";
 import { toast } from "./Toast";
 import { Modal } from "./Modal";
+import { ChangePasswordModal } from "./Account";
 import { addCustomer, addBill, recordPayment, addExpense, softDelete } from "../lib/writes";
 import { printInvoice } from "../lib/invoice";
 import { sum, live, computeStock, type SharedProps } from "./shared";
@@ -16,6 +17,8 @@ type Tab = "sale" | "purchase" | "bills" | "customers" | "daybook";
 
 export function Staff(p: SharedProps) {
   const [tab, setTab] = useState<Tab>("sale");
+  const [showAccount, setShowAccount] = useState(false);
+  const [showPw, setShowPw] = useState(false);
   const branchId = p.profile.branch_id!;
   const branches = useLiveQuery(() => localdb.branches.toArray(), [], []);
   const branchName = branches.find((b) => b.id === branchId)?.name ?? "My Branch";
@@ -33,7 +36,7 @@ export function Staff(p: SharedProps) {
         <div className="actions">
           <span className={"sync-pill " + (pending > 0 ? "pending" : "ok")}><span className="dot" />{pending > 0 ? pending : "Synced"}</span>
           <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
-          <button className="hbtn" style={{ width: 34, height: 34 }} onClick={p.onLogout}><Icon name="settings" size={16} /></button>
+          <button className="hbtn" style={{ width: 34, height: 34 }} onClick={() => setShowAccount(true)}><Icon name="settings" size={16} /></button>
         </div>
       </div>
       <div className="m-content">
@@ -50,6 +53,16 @@ export function Staff(p: SharedProps) {
           </button>
         ))}
       </div>
+      {showAccount && (
+        <Modal title="Account" onClose={() => setShowAccount(false)}>
+          <div className="form-grid">
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Signed in as <b>{p.profile.name}</b></p>
+            <button className="btn ghost" onClick={() => { setShowAccount(false); setShowPw(true); }}>Change password</button>
+            <button className="btn" style={{ background: "var(--red)" }} onClick={p.onLogout}>Sign out</button>
+          </div>
+        </Modal>
+      )}
+      {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
     </>
   );
 }

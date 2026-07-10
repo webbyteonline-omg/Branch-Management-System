@@ -52,6 +52,7 @@ input, select { font-family: inherit; font-size: 15px; }
 .btn:hover { background: var(--accent-d); }
 .btn:active { transform: scale(.99); }
 .err { color: var(--red); font-size: 13px; margin-top: 8px; min-height: 18px; }
+.forgot-link { display: block; margin: 14px auto 0; color: var(--accent); font-size: 13px; font-weight: 600; background: none; }
 .hint { margin-top: 18px; font-size: 12px; color: var(--muted); line-height: 1.7;
   background: var(--surface-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .hint b { color: #334155; }

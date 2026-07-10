@@ -19,24 +19,38 @@ Total setup time: ~30–40 minutes. Do it once.
 
 ## Step 2 — Create the user accounts
 
-Do this in **Authentication → Users → Add user** (email + password). For each user, expand **User Metadata** and add JSON so they get the right role/branch automatically:
+Staff sign in with a **simple User ID** (like `seppa`), not an email. Internally the app maps the ID to a fixed e-mail domain `@branch.local`, so in Supabase you create the users with these exact e-mails.
 
-Owner (Head Office):
-```json
-{ "name": "Owner", "role": "owner", "branch_id": "ho" }
-```
-Seppa staff:
-```json
-{ "name": "Ravi Kumar", "role": "staff", "branch_id": "seppa" }
-```
-Dirang staff:
-```json
-{ "name": "Tenzin Norbu", "role": "staff", "branch_id": "dirang" }
-```
+Go to **Authentication → Users → Add user**. Turn ON **Auto Confirm User** (so no email confirmation is needed). Create these three:
 
-Use real emails + passwords you give the staff. The trigger auto-creates their profile with the correct branch. (Repeat for every staff member.)
+| Sign-in ID | Email to enter in Supabase | Password | User Metadata (JSON) |
+|---|---|---|---|
+| **admin** | `admin@branch.local` | `admin123` | `{ "name": "Owner", "role": "owner", "branch_id": "ho" }` |
+| **seppa** | `seppa@branch.local` | `seppa123` | `{ "name": "Ravi Kumar", "role": "staff", "branch_id": "seppa" }` |
+| **dirang** | `dirang@branch.local` | `dirang123` | `{ "name": "Tenzin Norbu", "role": "staff", "branch_id": "dirang" }` |
+
+Expand **User Metadata** and paste the JSON for each. The trigger auto-creates their profile with the correct branch. To add more staff later, use the same pattern (e.g. `seppa2@branch.local`, ID `seppa2`).
+
+So the owner logs in with ID **admin** / **admin123**, Seppa staff with **seppa** / **seppa123**, Dirang with **dirang** / **dirang123**.
 
 > Security note: because of RLS, a Seppa login literally cannot read or write Dirang data — it's blocked in the database, not just hidden in the app.
+
+### Passwords & "forgot password"
+- **Anyone can change their own password in-app**, instantly — top-right account menu → *Change password*. No email needed.
+- **Owner can reset any staff password in-app** (for lock-outs) from **Settings → Staff passwords** — but that needs the Edge Function below deployed. Without it, the owner can instead reset a password instantly from **Supabase → Authentication → Users → (user) → Reset/Update password**.
+
+## Step 2b — (Optional but recommended) Deploy the password-reset function
+
+This powers the in-app "Settings → Staff passwords" reset. Skip it if you'll reset from the Supabase dashboard instead.
+
+```bash
+npm i -g supabase          # one-time
+supabase login
+supabase link --project-ref YOUR-PROJECT-REF
+supabase functions deploy admin-reset-password
+```
+
+The function file is at `supabase/functions/admin-reset-password/`. It runs on Supabase's servers with the service-role key (which Supabase injects automatically — you don't paste it anywhere), and it verifies the caller is the owner before changing anything.
 
 ## Step 3 — Deploy the frontend to Vercel
 

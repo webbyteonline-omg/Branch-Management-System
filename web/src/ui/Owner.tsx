@@ -7,6 +7,7 @@ import type { Range, Product, Settings } from "../lib/types";
 import { sum, topItems, shortBranch, live, deletedOnly, computeStock, type SharedProps } from "./shared";
 import { Modal } from "./Modal";
 import { toast } from "./Toast";
+import { ChangePasswordModal, ResetStaffPassword } from "./Account";
 import { saveProduct, softDelete, restoreRow, saveSettings } from "../lib/writes";
 
 type View = "dashboard" | "branch" | "customers" | "purchases" | "inventory" | "daybook" | "reports" | "settings";
@@ -403,6 +404,7 @@ function SettingsPage({ prodAll, online, settings, onSync }: any) {
   const [edit, setEdit] = useState<Partial<Product> | null>(null);
   const [showDeleted, setShowDeleted] = useState(false);
   const [co, setCo] = useState<Settings>(settings ?? { id: "main", company: "", address: "", phone: "", gstin: "", footer: "" });
+  const [showPw, setShowPw] = useState(false);
   useEffect(() => { if (settings) setCo(settings); }, [settings]);
   const blank: Partial<Product> = { name: "", unit: "pcs", sale_price: 0, cost_price: 0, low_stock_at: 5 };
   const rows: Product[] = showDeleted ? deletedOnly(prodAll) : live(prodAll);
@@ -464,9 +466,21 @@ function SettingsPage({ prodAll, online, settings, onSync }: any) {
         </table></div>
       </div>
 
-      <div className="card card-pad" style={{ marginTop: 16 }}><h3 style={{ margin: "0 0 8px" }}>Staff & Access</h3>
-        <p style={{ color: "var(--muted)", fontSize: 13.5, margin: 0 }}>Add or remove staff in Supabase → Authentication, setting their <b>name</b>, <b>role</b> and <b>branch_id</b> in user metadata. They sign in with email + password. Branch-level access is enforced by the database (RLS).</p></div>
+      <div className="card card-pad" style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "0 0 12px" }}>My account</h3>
+        <button className="btn" style={{ width: "auto", padding: "11px 20px" }} onClick={() => setShowPw(true)}>Change my password</button>
+      </div>
 
+      <div className="card card-pad" style={{ marginTop: 16 }}>
+        <h3 style={{ margin: "0 0 12px" }}>Staff passwords</h3>
+        <p style={{ color: "var(--muted)", fontSize: 13.5, margin: "0 0 14px" }}>Reset any staff member's password instantly (for "forgot password" situations). Requires the <b>admin-reset-password</b> Edge Function to be deployed — see DEPLOY.md.</p>
+        <ResetStaffPassword />
+      </div>
+
+      <div className="card card-pad" style={{ marginTop: 16 }}><h3 style={{ margin: "0 0 8px" }}>Staff accounts</h3>
+        <p style={{ color: "var(--muted)", fontSize: 13.5, margin: 0 }}>Add or remove staff in Supabase → Authentication, setting their <b>name</b>, <b>role</b> and <b>branch_id</b> in user metadata. They sign in with their User ID + password. Branch-level access is enforced by the database (RLS).</p></div>
+
+      {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
       {edit && (
         <Modal title={edit.id ? "Edit product" : "Add product"} onClose={() => setEdit(null)}>
           <div className="form-grid">
