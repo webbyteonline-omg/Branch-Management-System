@@ -5,8 +5,8 @@ export const timeStr = (t: string | number) =>
   new Date(t).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" });
 export const dateStr = (t: string | number) =>
   new Date(t).toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
-export const initials = (n: string) =>
-  n.split(" ").map((w) => w[0]).slice(0, 2).join("").toUpperCase();
+export const initials = (n?: string | null) =>
+  (n || "?").trim().split(/\s+/).map((w) => w[0] || "").slice(0, 2).join("").toUpperCase() || "?";
 
 const DAY = 86400 * 1000;
 

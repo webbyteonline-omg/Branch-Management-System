@@ -7,6 +7,7 @@ import { Login } from "./ui/Login";
 import { Owner } from "./ui/Owner";
 import { Staff } from "./ui/Staff";
 import { ToastHost, toast } from "./ui/Toast";
+import { ErrorBoundary } from "./ui/ErrorBoundary";
 
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -76,9 +77,9 @@ export function App() {
 
   const shared = { profile, online, onToggleOnline: toggleOnline, onLogout: logout, onSync: sync };
   return (
-    <>
+    <ErrorBoundary>
       {profile.role === "owner" ? <Owner {...shared} /> : <Staff {...shared} />}
       <ToastHost />
-    </>
+    </ErrorBoundary>
   );
 }
