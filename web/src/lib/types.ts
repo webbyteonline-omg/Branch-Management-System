@@ -36,6 +36,7 @@ export interface Sale {
   qty: number;
   price: number;
   total: number;
+  discount?: number;
   bill_no?: string | null;
   payment_mode?: "cash" | "upi" | "credit";
   created_at: string;

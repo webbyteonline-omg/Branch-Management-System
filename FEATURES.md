@@ -40,11 +40,16 @@ without internet and auto-syncs when back online.
 - **Branch-level security** — enforced in the database (RLS): staff can't touch another branch's data.
 - **Installable PWA** — add to home screen; works like a native app.
 
+## Recently added
+- **Bulk payment** — settle a customer's dues across all their bills at once (oldest first), from the ledger.
+- **Sales / Bill history** (owner) — every bill grouped by bill number, filter by payment type, **reprint any invoice**, export CSV.
+- **Staff-wise sales report** (owner Reports) — who sold how much.
+- **GST % + per-item discount %** in billing, shown on the printed invoice.
+- **Stock adjustments** (owner Inventory) — set opening stock or record wastage per branch.
+
 ## Roadmap (next)
-- Bill history + reprint / edit past bills; sequential bill-number series per branch
-- Staff-wise sales report (who sold how much)
-- Custom date-range reports & export to Excel/PDF
-- GST / tax on bills; discount per item
-- Stock adjustments (opening stock, wastage) & stock transfer between branches
+- Sequential bill-number series per branch (HP-001…)
+- Custom date-range picker & export to Excel/PDF
+- Stock transfer between branches
 - Barcode scanning for fast billing
 - WhatsApp bill / payment reminders to customers

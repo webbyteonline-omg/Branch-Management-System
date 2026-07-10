@@ -1,17 +1,22 @@
 import type { Bill, Settings } from "./types";
 import { money } from "./format";
 
-export interface InvoiceLine { name: string; qty: number; price: number; }
+export interface InvoiceLine { name: string; qty: number; price: number; discount?: number; }
 
 /** Itemized POS invoice (multi-product bill) — print / save-as-PDF. */
 export function printItemizedBill(
   billNo: string, lines: InvoiceLine[], customer: string,
-  paymentMode: string, settings: Settings | undefined, branchName: string,
+  paymentMode: string, settings: Settings | undefined, branchName: string, gstPercent = 0,
 ) {
   const co = settings?.company || "My Shop";
   const when = new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
-  const total = lines.reduce((a, l) => a + l.qty * l.price, 0);
-  const rows = lines.map((l) => `<tr><td>${escapeHtml(l.name)}</td><td style="text-align:center">${l.qty}</td><td style="text-align:right">${money(l.price)}</td><td style="text-align:right">${money(l.qty * l.price)}</td></tr>`).join("");
+  const lineNet = (l: InvoiceLine) => l.qty * l.price * (1 - (l.discount || 0) / 100);
+  const subtotal = lines.reduce((a, l) => a + lineNet(l), 0);
+  const gstAmt = subtotal * (Number(gstPercent) || 0) / 100;
+  const total = subtotal + gstAmt;
+  const anyDisc = lines.some((l) => (l.discount || 0) > 0);
+  const rows = lines.map((l) => `<tr><td>${escapeHtml(l.name)}</td><td style="text-align:center">${l.qty}</td><td style="text-align:right">${money(l.price)}</td>${anyDisc ? `<td style="text-align:right">${l.discount ? l.discount + "%" : "-"}</td>` : ""}<td style="text-align:right">${money(lineNet(l))}</td></tr>`).join("");
+  const totalsBlock = `${(anyDisc || gstPercent > 0) ? `<div class="meta"><span>Subtotal</span><span>${money(subtotal)}</span></div>` : ""}${gstPercent > 0 ? `<div class="meta"><span>GST ${gstPercent}%</span><span>${money(gstAmt)}</span></div>` : ""}`;
   const html = `<!doctype html><html><head><meta charset="utf-8"/><title>${billNo}</title>
   <style>
     *{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0f172a}
@@ -33,7 +38,8 @@ export function printItemizedBill(
     </div>
     <div class="meta"><span>Bill: <b>${billNo}</b></span><span>${when}</span></div>
     <div class="meta"><span>Customer: <b>${escapeHtml(customer)}</b></span><span>Payment: <b>${paymentMode.toUpperCase()}</b></span></div>
-    <table><thead><tr><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>
+    <table><thead><tr><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th>${anyDisc ? `<th style="text-align:right">Disc</th>` : ""}<th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>
+    ${totalsBlock}
     <div class="tot"><span>Total</span><span>${money(total)}</span></div>
     <div class="foot">${escapeHtml(settings?.footer || "Thank you for your business!")}</div>
     <div style="text-align:center;margin-top:18px"><button onclick="window.print()" style="padding:10px 22px;border:none;border-radius:8px;background:#4f46e5;color:#fff;font-weight:600">Print / Save PDF</button></div>

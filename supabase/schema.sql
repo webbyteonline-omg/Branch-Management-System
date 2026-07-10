@@ -60,6 +60,7 @@ create table if not exists public.sales (
   qty           numeric(12,2) not null,
   price         numeric(12,2) not null,
   total         numeric(12,2) not null,
+  discount      numeric(12,2) not null default 0,  -- percent discount on the line
   bill_no       text,                              -- groups items of one bill
   payment_mode  text not null default 'cash',      -- cash | upi | credit
   created_at    timestamptz not null default now(),
@@ -68,6 +69,7 @@ create table if not exists public.sales (
 -- for existing databases (safe to re-run):
 alter table public.sales add column if not exists bill_no text;
 alter table public.sales add column if not exists payment_mode text not null default 'cash';
+alter table public.sales add column if not exists discount numeric(12,2) not null default 0;
 
 create table if not exists public.purchases (
   id            uuid primary key,

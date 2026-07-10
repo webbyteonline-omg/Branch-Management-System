@@ -1,11 +1,15 @@
+import { useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { localdb } from "../lib/db";
 import { money, dateStr } from "../lib/format";
 import { live } from "./shared";
 import { Modal } from "./Modal";
+import { toast } from "./Toast";
+import { settleCustomerDues } from "../lib/writes";
 
 /** Customer ledger / khata — full purchase & bill history + outstanding. */
-export function LedgerModal({ branchId, name, onClose }: { branchId: string; name: string; onClose: () => void }) {
+export function LedgerModal({ branchId, name, onClose, onSync }: { branchId: string; name: string; onClose: () => void; onSync?: () => void }) {
+  const [payAmt, setPayAmt] = useState<number | "">("");
   const lc = name.trim().toLowerCase();
   const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []))
     .filter((s) => (s.customer_name || "").toLowerCase() === lc)
@@ -18,6 +22,14 @@ export function LedgerModal({ branchId, name, onClose }: { branchId: string; nam
 
   const totalBought = sales.reduce((a, s) => a + s.total, 0);
   const outstanding = cust?.balance_due ?? bills.filter((b) => b.status === "unpaid").reduce((a, b) => a + b.due_amount, 0);
+
+  const settle = async () => {
+    const amt = Number(payAmt) || 0;
+    if (amt <= 0) return toast("Enter amount");
+    const applied = await settleCustomerDues(branchId, name, amt);
+    toast(applied > 0 ? `${money(applied)} settled` : "No dues to settle");
+    setPayAmt(""); onSync?.();
+  };
 
   // group sales by bill_no for readability
   const byBill = new Map<string, { total: number; date: string; pay: string; items: number }>();
@@ -36,7 +48,15 @@ export function LedgerModal({ branchId, name, onClose }: { branchId: string; nam
         <div className="stat" style={{ flex: 1 }}><div className="label">Outstanding</div><div className="value" style={{ fontSize: 18, color: outstanding > 0 ? "var(--red)" : "var(--green)" }}>{money(outstanding)}</div></div>
       </div>
 
-      <div style={{ maxHeight: "48vh", overflowY: "auto" }}>
+      {onSync && outstanding > 0 && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+          <input className="search" style={{ flex: 1, width: "auto" }} type="number" inputMode="numeric" placeholder="Settle dues amount" value={payAmt} onChange={(e) => setPayAmt(e.target.value === "" ? "" : +e.target.value)} />
+          <button className="btn" style={{ width: "auto", padding: "9px 16px" }} onClick={() => setPayAmt(outstanding)}>All</button>
+          <button className="btn" style={{ width: "auto", padding: "9px 16px" }} onClick={settle}>Settle</button>
+        </div>
+      )}
+
+      <div style={{ maxHeight: "44vh", overflowY: "auto" }}>
         <div className="t-label" style={{ margin: "4px 0 6px" }}>Bills / purchases</div>
         {billGroups.length ? billGroups.map(([key, g]) => (
           <div className="row" key={key}>

@@ -80,6 +80,8 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
   const [pid, setPid] = useState("");
   const [qty, setQty] = useState(1);
   const [price, setPrice] = useState(0);
+  const [disc, setDisc] = useState(0);
+  const [gst, setGst] = useState(0);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cust, setCust] = useState("");
   const [pay, setPay] = useState<"cash" | "upi" | "credit">("cash");
@@ -88,7 +90,8 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
   const selected = products.find((x) => x.id === pid) ?? products[0];
   useMemo(() => { if (selected) setPrice(selected.sale_price); }, [selected?.id]);
   const stock = selected ? computeStock(selected.id, branchId, branchSales, branchPurch) : 0;
-  const cartTotal = cart.reduce((a, c) => a + c.qty * c.price, 0);
+  const subtotal = cart.reduce((a, c) => a + c.qty * c.price * (1 - (c.discount || 0) / 100), 0);
+  const cartTotal = subtotal * (1 + (Number(gst) || 0) / 100);
 
   const today = rangeStart("today");
   const todayTotal = sum(live(branchSales).filter((s) => new Date(s.created_at).getTime() >= today), "total");
@@ -97,22 +100,22 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
     if (!selected) return toast("No products");
     if (!qty || qty < 1) return toast("Enter quantity");
     setCart((c) => {
-      const found = c.find((x) => x.product_id === selected.id && x.price === price);
+      const found = c.find((x) => x.product_id === selected.id && x.price === price && (x.discount || 0) === disc);
       if (found) return c.map((x) => x === found ? { ...x, qty: x.qty + qty } : x);
-      return [...c, { product_id: selected.id, name: selected.name, qty, price }];
+      return [...c, { product_id: selected.id, name: selected.name, qty, price, discount: disc }];
     });
-    setQty(1);
+    setQty(1); setDisc(0);
   };
   const removeItem = (i: number) => setCart((c) => c.filter((_, k) => k !== i));
 
   const save = async (print: boolean) => {
     if (!cart.length) return toast("Add at least one item");
     setSaving(true);
-    const { billNo } = await createSaleBill(branchId, shared.profile.id, cust, pay, cart);
+    const { billNo } = await createSaleBill(branchId, shared.profile.id, cust, pay, cart, gst);
     setSaving(false);
-    if (print) printItemizedBill(billNo, cart.map((c) => ({ name: c.name, qty: c.qty, price: c.price })), cust.trim() || "Walk-in", pay, settings, branchName);
+    if (print) printItemizedBill(billNo, cart.map((c) => ({ name: c.name, qty: c.qty, price: c.price, discount: c.discount })), cust.trim() || "Walk-in", pay, settings, branchName, gst);
     toast(`Bill ${billNo} saved` + (shared.online ? "" : " offline"));
-    setCart([]); setCust(""); setPay("cash"); shared.onSync();
+    setCart([]); setCust(""); setPay("cash"); setGst(0); shared.onSync();
   };
 
   return (
@@ -129,9 +132,10 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
             </select>
             {selected && <div className="stock-hint">In stock: <b className={stock <= (selected.low_stock_at ?? 5) ? "low" : ""}>{stock} {selected.unit}</b></div>}
           </div>
-          <div className="qty-row">
+          <div className="qty-row" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
             <div className="field"><label>Quantity</label><input type="number" inputMode="numeric" min={1} value={qty} onChange={(e) => setQty(+e.target.value)} /></div>
             <div className="field"><label>Price each</label><input type="number" inputMode="numeric" value={price} onChange={(e) => setPrice(+e.target.value)} /></div>
+            <div className="field"><label>Disc %</label><input type="number" inputMode="numeric" value={disc} onChange={(e) => setDisc(+e.target.value)} /></div>
           </div>
           <button className="btn ghost" onClick={addItem}>+ Add item to bill</button>
         </div>
@@ -141,8 +145,8 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
         <div className="card-head"><h3>Bill items ({cart.length})</h3><b>{money(cartTotal)}</b></div>
         <div className="card-pad" style={{ paddingTop: 6 }}>
           {cart.length ? cart.map((c, i) => (
-            <div className="row" key={i}><div><div className="main">{c.name} × {c.qty}</div><div className="sub">{money(c.price)} each</div></div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className="amt in">{money(c.qty * c.price)}</div><button className="del-btn" onClick={() => removeItem(i)}>✕</button></div></div>
+            <div className="row" key={i}><div><div className="main">{c.name} × {c.qty}</div><div className="sub">{money(c.price)} each{c.discount ? ` · ${c.discount}% off` : ""}</div></div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className="amt in">{money(c.qty * c.price * (1 - (c.discount || 0) / 100))}</div><button className="del-btn" onClick={() => removeItem(i)}>✕</button></div></div>
           )) : <div className="empty">No items yet. Add products above.</div>}
         </div>
       </div>
@@ -153,6 +157,12 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
             <div className="field"><label>Customer (optional)</label>
               <input list="cust-list" value={cust} onChange={(e) => setCust(e.target.value)} placeholder="Walk-in" />
               <datalist id="cust-list">{customers.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+            </div>
+            <div className="qty-row">
+              <div className="field"><label>GST %</label><input type="number" inputMode="numeric" value={gst} onChange={(e) => setGst(+e.target.value)} placeholder="0" /></div>
+              <div className="field" style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+                <div style={{ fontSize: 13, color: "var(--muted)" }}>Subtotal {money(subtotal)}{gst ? ` + GST ${gst}%` : ""}</div>
+              </div>
             </div>
             <div className="field"><label>Payment</label>
               <div className="pay-select">
@@ -339,7 +349,7 @@ function Customers({ branchId, shared }: { branchId: string; shared: SharedProps
           )) : <div className="empty">No customers yet.</div>}
         </div>
       </div>
-      {ledger && <LedgerModal branchId={branchId} name={ledger} onClose={() => setLedger(null)} />}
+      {ledger && <LedgerModal branchId={branchId} name={ledger} onClose={() => setLedger(null)} onSync={shared.onSync} />}
       {editC && <EditCustomerModal customer={editC} onClose={() => setEditC(null)} onSync={shared.onSync} />}
       {show && (
         <Modal title="Add customer" onClose={() => setShow(false)}>

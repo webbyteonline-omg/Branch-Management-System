@@ -33,26 +33,28 @@ export async function addExpense(branchId: string, createdBy: string, category: 
   await localdb.expenses.add(row);
 }
 
-export interface CartItem { product_id: string; name: string; qty: number; price: number; }
+export interface CartItem { product_id: string; name: string; qty: number; price: number; discount?: number; }
 
 /** POS billing: saves a multi-item bill as grouped sales rows sharing one
- *  bill_no + payment mode. Credit bills also create an udhaar entry and bump
- *  the customer balance. Returns the bill_no for the printed invoice. */
+ *  bill_no + payment mode. Applies per-item discount % and a bill-level GST %.
+ *  Credit bills also create an udhaar entry and bump the customer balance. */
 export async function createSaleBill(
   branchId: string, userId: string, customerName: string,
-  paymentMode: "cash" | "upi" | "credit", items: CartItem[],
+  paymentMode: "cash" | "upi" | "credit", items: CartItem[], gstPercent = 0,
 ): Promise<{ billNo: string; total: number }> {
   const billNo = "B-" + Date.now().toString(36).toUpperCase().slice(-7);
   const cust = customerName.trim() || "Walk-in";
+  const gst = 1 + (Number(gstPercent) || 0) / 100;
   let total = 0;
   const now = new Date().toISOString();
   for (const it of items) {
-    const lineTotal = it.qty * it.price;
-    total += lineTotal;
+    const disc = Number(it.discount) || 0;
+    const net = it.qty * it.price * (1 - disc / 100) * gst;
+    total += net;
     await localdb.sales.add({
       id: uuid(), branch_id: branchId, created_by: userId, product_id: it.product_id,
-      product_name: it.name, customer_name: cust, qty: it.qty, price: it.price, total: lineTotal,
-      bill_no: billNo, payment_mode: paymentMode, created_at: now, deleted_at: null, _synced: 0,
+      product_name: it.name, customer_name: cust, qty: it.qty, price: it.price, total: net,
+      discount: disc, bill_no: billNo, payment_mode: paymentMode, created_at: now, deleted_at: null, _synced: 0,
     });
   }
   if (paymentMode === "credit") {
@@ -63,6 +65,36 @@ export async function createSaleBill(
     await bumpCustomerBalance(branchId, cust, total);
   }
   return { billNo, total };
+}
+
+/** Settle a customer's dues across their unpaid bills, oldest first. */
+export async function settleCustomerDues(branchId: string, customerName: string, amount: number): Promise<number> {
+  let left = Number(amount) || 0;
+  const lc = customerName.trim().toLowerCase();
+  const bills = (await localdb.bills.where("branch_id").equals(branchId).toArray())
+    .filter((b) => !b.deleted_at && b.status === "unpaid" && b.customer_name.toLowerCase() === lc)
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  let applied = 0;
+  for (const b of bills) {
+    if (left <= 0) break;
+    const pay = Math.min(left, b.due_amount);
+    const paid = b.paid + pay;
+    const due = Math.max(0, b.amount - paid);
+    await localdb.bills.put({ ...b, paid, due_amount: due, status: due <= 0 ? "paid" : "unpaid", _synced: 0 });
+    left -= pay; applied += pay;
+  }
+  await bumpCustomerBalance(branchId, customerName, -applied);
+  return applied;
+}
+
+/** Stock adjustment (opening stock / wastage) — recorded as a zero-cost
+ *  purchase so it flows into computed inventory. Positive adds, negative removes. */
+export async function addStockAdjustment(branchId: string, userId: string, product: { id: string; name: string }, deltaQty: number, reason: string): Promise<void> {
+  await localdb.purchases.add({
+    id: uuid(), branch_id: branchId, created_by: userId, product_id: product.id,
+    product_name: product.name, supplier: `Stock adjustment${reason ? ": " + reason : ""}`,
+    qty: Number(deltaQty), cost: 0, total: 0, created_at: new Date().toISOString(), deleted_at: null, _synced: 0,
+  });
 }
 
 /** Owner company profile for invoices (online write, RLS: owner only). */
