@@ -18,6 +18,11 @@ export async function restoreRow(table: SyncTable, id: string): Promise<void> {
   await (localdb as any)[table].put({ ...row, deleted_at: null, _synced: 0 });
 }
 
+/** Edit any row — saves locally and re-syncs (upsert overwrites the server copy). */
+export async function saveEdit(table: SyncTable, row: any): Promise<void> {
+  await (localdb as any)[table].put({ ...row, _synced: 0 });
+}
+
 /** Add a shop expense — offline-first. */
 export async function addExpense(branchId: string, createdBy: string, category: string, note: string, amount: number): Promise<void> {
   const row: Expense = {

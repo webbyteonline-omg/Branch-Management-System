@@ -27,7 +27,13 @@ without internet and auto-syncs when back online.
 - **Day Book** — running in/out/net; add **expenses** (transport, rent, salary, etc.); delete any entry.
 - **Pending-sync counter** — shows entries waiting to upload; ⏳ marks unsynced rows.
 
+## Edit & delete (everywhere)
+- **Edit** customers, bills, and any day-book entry (sale/purchase/expense) — from both owner and staff.
+- **Soft delete** with restore (owner) on all records.
+- **CSV export** (owner) — customers list and the full day book, opens in Excel.
+
 ## System-wide
+- **Live realtime** — the moment a staff member saves a sale/purchase/bill/expense/customer, it appears on the owner's dashboard within a second, no refresh. (Requires Supabase Realtime — enabled by `schema.sql`.)
 - **Offline-first** — every entry saves on the device first, syncs when online. Zero data loss.
 - **No duplicates** — client-generated IDs make sync idempotent.
 - **Soft delete everywhere** — nothing is ever truly deleted; owner can restore.

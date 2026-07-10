@@ -7,6 +7,7 @@ import { toast } from "./Toast";
 import { Modal } from "./Modal";
 import { ChangePasswordModal } from "./Account";
 import { LedgerModal } from "./Ledger";
+import { EditCustomerModal, EditEntryModal, EditBillModal } from "./Edits";
 import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, type CartItem } from "../lib/writes";
 import { printInvoice, printItemizedBill } from "../lib/invoice";
 import { sum, live, computeStock, type SharedProps } from "./shared";
@@ -244,6 +245,7 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState(""); const [amount, setAmount] = useState(0); const [paidNow, setPaidNow] = useState(0);
   const [payFor, setPayFor] = useState<BillT | null>(null); const [payAmt, setPayAmt] = useState(0);
+  const [editBill, setEditBill] = useState<BillT | null>(null);
 
   const saveBill = async () => {
     if (!name.trim()) return toast("Enter customer name");
@@ -275,6 +277,7 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
               <div style={{ textAlign: "right", display: "flex", alignItems: "center", gap: 8 }}>
                 <div><div className="amt out">{money(b.due_amount)}</div><span className={"badge " + b.status}>{b.status}</span></div>
                 {b.status === "unpaid" && <button className="pay-btn" onClick={() => { setPayFor(b); setPayAmt(b.due_amount); }}>Pay</button>}
+                <button className="edit-btn" onClick={() => setEditBill(b)}>Edit</button>
                 <button className="edit-btn" title="Print invoice" onClick={() => printInvoice(b, settings, branchName)}>🖨</button>
                 <button className="del-btn" onClick={() => delBill(b.id)}>✕</button>
               </div>
@@ -308,6 +311,7 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
           </div>
         </Modal>
       )}
+      {editBill && <EditBillModal bill={editBill} onClose={() => setEditBill(null)} onSync={shared.onSync} />}
     </>
   );
 }
@@ -315,6 +319,7 @@ function Customers({ branchId, shared }: { branchId: string; shared: SharedProps
   const cust = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const [show, setShow] = useState(false);
   const [ledger, setLedger] = useState<string | null>(null);
+  const [editC, setEditC] = useState<any>(null);
   const [name, setName] = useState(""); const [phone, setPhone] = useState("");
   const save = async () => {
     if (!name.trim()) return toast("Enter customer name");
@@ -330,11 +335,12 @@ function Customers({ branchId, shared }: { branchId: string; shared: SharedProps
         <div className="card-pad" style={{ paddingTop: 6 }}>
           {cust.length ? cust.map((c) => (
             <div className="row" key={c.id}><div onClick={() => setLedger(c.name)} style={{ cursor: "pointer" }}><div className="main">{c.name}</div><div className="sub">{c.phone}{c._synced === 0 ? " · ⏳" : ""} · tap for ledger</div></div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}><div className={"amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) + " due" : "Clear"}</div><button className="pay-btn" onClick={() => setLedger(c.name)}>Ledger</button><button className="del-btn" onClick={() => delCust(c.id)}>✕</button></div></div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}><div className={"amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) + " due" : "Clear"}</div><button className="pay-btn" onClick={() => setLedger(c.name)}>Ledger</button><button className="edit-btn" onClick={() => setEditC(c)}>Edit</button><button className="del-btn" onClick={() => delCust(c.id)}>✕</button></div></div>
           )) : <div className="empty">No customers yet.</div>}
         </div>
       </div>
       {ledger && <LedgerModal branchId={branchId} name={ledger} onClose={() => setLedger(null)} />}
+      {editC && <EditCustomerModal customer={editC} onClose={() => setEditC(null)} onSync={shared.onSync} />}
       {show && (
         <Modal title="Add customer" onClose={() => setShow(false)}>
           <div className="form-grid">
@@ -357,6 +363,7 @@ function Daybook({ branchId, shared }: { branchId: string; shared: SharedProps }
   const outE = sum(expenses.filter((s) => new Date(s.created_at).getTime() >= today), "amount");
 
   const [show, setShow] = useState(false);
+  const [editRow, setEditRow] = useState<{ table: "sales" | "purchases" | "expenses"; row: any } | null>(null);
   const [cat, setCat] = useState("General"); const [note, setNote] = useState(""); const [amt, setAmt] = useState(0);
   const saveExp = async () => {
     if (!amt || amt <= 0) return toast("Enter amount");
@@ -369,9 +376,9 @@ function Daybook({ branchId, shared }: { branchId: string; shared: SharedProps }
   };
 
   const items = [
-    ...sales.map((s) => ({ table: "sales" as const, id: s.id, t: s.created_at, label: `Sale · ${s.product_name} × ${s.qty}`, amt: s.total, dir: "in", what: "sale" })),
-    ...purch.map((x) => ({ table: "purchases" as const, id: x.id, t: x.created_at, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out", what: "purchase" })),
-    ...expenses.map((x) => ({ table: "expenses" as const, id: x.id, t: x.created_at, label: `Expense · ${x.category}${x.note ? " (" + x.note + ")" : ""}`, amt: x.amount, dir: "out", what: "expense" })),
+    ...sales.map((s) => ({ table: "sales" as const, id: s.id, row: s, t: s.created_at, label: `Sale · ${s.product_name} × ${s.qty}`, amt: s.total, dir: "in", what: "sale" })),
+    ...purch.map((x) => ({ table: "purchases" as const, id: x.id, row: x, t: x.created_at, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out", what: "purchase" })),
+    ...expenses.map((x) => ({ table: "expenses" as const, id: x.id, row: x, t: x.created_at, label: `Expense · ${x.category}${x.note ? " (" + x.note + ")" : ""}`, amt: x.amount, dir: "out", what: "expense" })),
   ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 50);
 
   const cats = ["General", "Transport", "Rent", "Salary", "Electricity", "Tea/Food", "Repair"];
@@ -387,10 +394,11 @@ function Daybook({ branchId, shared }: { branchId: string; shared: SharedProps }
         <div className="card-pad" style={{ paddingTop: 6 }}>
           {items.length ? items.map((i) => (
             <div className="row" key={i.id}><div><div className="main">{i.label}</div><div className="sub">{dateStr(i.t)} · {timeStr(i.t)}</div></div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className={"amt " + i.dir}>{i.dir === "in" ? "+" : "−"}{money(i.amt)}</div><button className="del-btn" onClick={() => delItem(i.table, i.id, i.what)}>✕</button></div></div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}><div className={"amt " + i.dir}>{i.dir === "in" ? "+" : "−"}{money(i.amt)}</div><button className="edit-btn" onClick={() => setEditRow({ table: i.table, row: i.row })}>Edit</button><button className="del-btn" onClick={() => delItem(i.table, i.id, i.what)}>✕</button></div></div>
           )) : <div className="empty">No entries.</div>}
         </div>
       </div>
+      {editRow && <EditEntryModal table={editRow.table} row={editRow.row} onClose={() => setEditRow(null)} onSync={shared.onSync} />}
       {show && (
         <Modal title="Add expense" onClose={() => setShow(false)}>
           <div className="form-grid">

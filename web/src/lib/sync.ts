@@ -92,25 +92,24 @@ export async function pushPending(): Promise<number> {
   return pushed;
 }
 
-/** Live updates so the owner's dashboard reflects branch activity instantly. */
+/** Live updates so the owner's dashboard reflects branch activity instantly.
+ *  Every insert/update/delete from any device is written into the local store,
+ *  and Dexie's live queries re-render the UI within a second — no refresh. */
 export function subscribeRealtime(onChange: () => void) {
-  const ch = supabase
-    .channel("branch-activity")
-    .on("postgres_changes", { event: "*", schema: "public", table: "sales" }, async (p) => {
-      if (p.new && (p.new as any).id) await localdb.sales.put({ ...(p.new as any), _synced: 1 });
-      onChange();
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "purchases" }, async (p) => {
-      if (p.new && (p.new as any).id) await localdb.purchases.put({ ...(p.new as any), _synced: 1 });
-      onChange();
-    })
-    .on("postgres_changes", { event: "*", schema: "public", table: "bills" }, () => onChange())
-    .on("postgres_changes", { event: "*", schema: "public", table: "expenses" }, async (p) => {
-      if (p.new && (p.new as any).id) await localdb.expenses.put({ ...(p.new as any), _synced: 1 });
-      onChange();
-    })
-    .subscribe();
-  return () => {
-    supabase.removeChannel(ch);
+  const tables: Record<string, any> = {
+    sales: localdb.sales, purchases: localdb.purchases, bills: localdb.bills,
+    expenses: localdb.expenses, customers: localdb.customers,
   };
+  const ch = supabase.channel("branch-activity");
+  for (const [name, table] of Object.entries(tables)) {
+    ch.on("postgres_changes", { event: "*", schema: "public", table: name }, async (p) => {
+      try {
+        if (p.eventType === "DELETE" && (p.old as any)?.id) await table.delete((p.old as any).id);
+        else if ((p.new as any)?.id) await table.put({ ...(p.new as any), _synced: 1 });
+      } catch { /* ignore */ }
+      onChange();
+    });
+  }
+  ch.subscribe();
+  return () => { supabase.removeChannel(ch); };
 }

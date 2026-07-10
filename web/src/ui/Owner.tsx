@@ -10,6 +10,8 @@ import { toast } from "./Toast";
 import { ChangePasswordModal, ResetStaffPassword, StaffManager } from "./Account";
 import { saveProduct, softDelete, restoreRow, saveSettings } from "../lib/writes";
 import { LedgerModal } from "./Ledger";
+import { EditCustomerModal, EditEntryModal } from "./Edits";
+import { downloadCSV } from "../lib/csv";
 
 type View = "dashboard" | "branch" | "customers" | "purchases" | "inventory" | "daybook" | "reports" | "settings";
 const inRange = (rows: any[], from: number) => rows.filter((r) => new Date(r.created_at).getTime() >= from);
@@ -97,7 +99,7 @@ export function Owner(p: SharedProps) {
           {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} onSync={p.onSync} />}
           {view === "purchases" && <PurchasesPage purchAll={purchAll} bmap={bmap} range={range} from={from} onSync={p.onSync} />}
           {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} />}
-          {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={range} />}
+          {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={range} onSync={p.onSync} />}
           {view === "reports" && <ReportsPage rSales={rSales} range={range} />}
           {view === "settings" && <SettingsPage prodAll={prodAll} online={p.online} settings={settings} onSync={p.onSync} branches={branches} />}
         </div>
@@ -265,8 +267,10 @@ function CustomersPage({ custAll, bmap, onSync }: any) {
   const [showDeleted, setShowDeleted] = useState(false);
   const [q, setQ] = useState("");
   const [ledger, setLedger] = useState<{ branchId: string; name: string } | null>(null);
+  const [editC, setEditC] = useState<any>(null);
   let rows = showDeleted ? deletedOnly(custAll) : live(custAll);
   if (q.trim()) rows = rows.filter((c: any) => (c.name + (c.phone || "")).toLowerCase().includes(q.toLowerCase()));
+  const exportCsv = () => downloadCSV("customers", ["Name", "Phone", "Branch", "Balance due"], rows.map((c: any) => [c.name, c.phone || "", bmap[c.branch_id] || "", c.balance_due]));
   const act = async (c: any) => {
     if (showDeleted) { await restoreRow("customers", c.id); toast("Restored"); }
     else if (confirmDelete("customer")) { await softDelete("customers", c.id); toast("Deleted"); }
@@ -279,6 +283,7 @@ function CustomersPage({ custAll, bmap, onSync }: any) {
           <h3>{rows.length} {showDeleted ? "deleted" : "customer" + (rows.length === 1 ? "" : "s")}</h3>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <input className="search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <button className="edit-btn" onClick={exportCsv}>Export CSV</button>
             <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted items"}</button>
           </div>
         </div>
@@ -288,12 +293,14 @@ function CustomersPage({ custAll, bmap, onSync }: any) {
             <tr key={c.id}><td>{c.name}</td><td>{c.phone}</td><td><span className="b-tag">{bmap[c.branch_id]}</span></td>
               <td className={"r amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) : "Clear"}</td>
               <td className="r" style={{ whiteSpace: "nowrap" }}>
-                {!showDeleted && <button className="edit-btn" onClick={() => setLedger({ branchId: c.branch_id, name: c.name })}>Ledger</button>}{" "}
+                {!showDeleted && <><button className="edit-btn" onClick={() => setLedger({ branchId: c.branch_id, name: c.name })}>Ledger</button>{" "}
+                <button className="edit-btn" onClick={() => setEditC(c)}>Edit</button>{" "}</>}
                 <button className={showDeleted ? "pay-btn" : "del-btn"} onClick={() => act(c)}>{showDeleted ? "Restore" : "✕"}</button></td></tr>
           )) : <tr><td colSpan={5}><div className="empty">Nothing here.</div></td></tr>}</tbody>
         </table></div>
       </div>
-      {ledger && <LedgerModal branchId={ledger.branchId} name={ledger.name} onClose={() => setLedger(null)} />}</>
+      {ledger && <LedgerModal branchId={ledger.branchId} name={ledger.name} onClose={() => setLedger(null)} />}
+      {editC && <EditCustomerModal customer={editC} onClose={() => setEditC(null)} onSync={onSync} />}</>
   );
 }
 
@@ -351,13 +358,17 @@ function InventoryPage({ products, sales, purchases, branches }: any) {
 }
 
 /* ---------- day book ---------- */
-function DaybookPage({ rSales, rPurch, rExp, bmap, range }: any) {
+function DaybookPage({ rSales, rPurch, rExp, bmap, range, onSync }: any) {
+  const [editRow, setEditRow] = useState<{ table: any; row: any } | null>(null);
   const inT = sum(rSales, "total"), outP = sum(rPurch, "total"), outE = sum(rExp, "amount");
+  const del = async (table: any, id: string, what: string) => { if (confirmDelete(what)) { await softDelete(table, id); toast("Deleted"); onSync(); } };
   const items = [
-    ...rSales.map((s: any) => ({ t: s.created_at, br: s.branch_id, label: `Sale · ${s.product_name} × ${s.qty}`, amt: s.total, dir: "in" })),
-    ...rPurch.map((x: any) => ({ t: x.created_at, br: x.branch_id, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out" })),
-    ...rExp.map((x: any) => ({ t: x.created_at, br: x.branch_id, label: `Expense · ${x.category}`, amt: x.amount, dir: "out" })),
-  ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 80);
+    ...rSales.map((s: any) => ({ table: "sales", id: s.id, row: s, t: s.created_at, br: s.branch_id, label: `Sale · ${s.product_name} × ${s.qty}`, amt: s.total, dir: "in", what: "sale" })),
+    ...rPurch.map((x: any) => ({ table: "purchases", id: x.id, row: x, t: x.created_at, br: x.branch_id, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out", what: "purchase" })),
+    ...rExp.map((x: any) => ({ table: "expenses", id: x.id, row: x, t: x.created_at, br: x.branch_id, label: `Expense · ${x.category}`, amt: x.amount, dir: "out", what: "expense" })),
+  ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime());
+  const exportCsv = () => downloadCSV("daybook", ["Date", "Time", "Branch", "Detail", "In/Out", "Amount"],
+    items.map((i: any) => [dateStr(i.t), timeStr(i.t), bmap[i.br] || "", i.label, i.dir === "in" ? "IN" : "OUT", i.amt]));
   return (
     <><h1 className="page-title">Day Book</h1><p className="page-sub">Combined money in & out · {rangeLabel(range).toLowerCase()}.</p>
       <div className="stats" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
@@ -366,13 +377,17 @@ function DaybookPage({ rSales, rPurch, rExp, bmap, range }: any) {
         <div className="stat"><div className="label">Expenses</div><div className="value" style={{ color: "var(--red)" }}>{money(outE)}</div></div>
         <div className="stat"><div className="label">Net</div><div className="value">{money(inT - outP - outE)}</div></div>
       </div>
-      <div className="card"><div className="table-wrap"><table>
-        <thead><tr><th>When</th><th>Branch</th><th>Detail</th><th className="r">Amount</th></tr></thead>
-        <tbody>{items.map((i, k) => (
-          <tr key={k}><td>{dateStr(i.t)} {timeStr(i.t)}</td><td><span className="b-tag">{bmap[i.br]}</span></td>
-            <td>{i.label}</td><td className={"r amt " + i.dir}>{i.dir === "in" ? "+" : "−"}{money(i.amt)}</td></tr>
+      <div className="card">
+        <div className="card-head"><h3>All entries ({items.length})</h3><button className="edit-btn" onClick={exportCsv}>Export CSV</button></div>
+        <div className="table-wrap"><table>
+        <thead><tr><th>When</th><th>Branch</th><th>Detail</th><th className="r">Amount</th><th className="r"></th></tr></thead>
+        <tbody>{items.slice(0, 200).map((i: any) => (
+          <tr key={i.id}><td>{dateStr(i.t)} {timeStr(i.t)}</td><td><span className="b-tag">{bmap[i.br]}</span></td>
+            <td>{i.label}</td><td className={"r amt " + i.dir}>{i.dir === "in" ? "+" : "−"}{money(i.amt)}</td>
+            <td className="r" style={{ whiteSpace: "nowrap" }}><button className="edit-btn" onClick={() => setEditRow({ table: i.table, row: i.row })}>Edit</button> <button className="del-btn" onClick={() => del(i.table, i.id, i.what)}>✕</button></td></tr>
         ))}</tbody>
-      </table></div></div></>
+      </table></div></div>
+      {editRow && <EditEntryModal table={editRow.table} row={editRow.row} onClose={() => setEditRow(null)} onSync={onSync} />}</>
   );
 }
 
