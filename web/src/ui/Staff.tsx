@@ -8,9 +8,9 @@ import { Modal } from "./Modal";
 import { ChangePasswordModal } from "./Account";
 import { LedgerModal } from "./Ledger";
 import { EditCustomerModal, EditEntryModal, EditBillModal } from "./Edits";
-import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, type CartItem } from "../lib/writes";
+import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, type CartItem } from "../lib/writes";
 import { printInvoice, printItemizedBill } from "../lib/invoice";
-import { sum, live, computeStock, type SharedProps } from "./shared";
+import { sum, live, computeStock, productsForBranch, type SharedProps } from "./shared";
 import type { Purchase, Bill as BillT } from "../lib/types";
 
 const confirmDel = (what: string) => window.confirm(`Delete this ${what}? It can be restored by the owner.`);
@@ -71,7 +71,7 @@ export function Staff(p: SharedProps) {
 
 /* ---------- Sale ---------- */
 function BillingForm({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
-  const products = live(useLiveQuery(() => localdb.products.toArray(), [], []));
+  const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
   const branchSales = useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []);
   const branchPurch = useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []);
   const customers = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
@@ -183,58 +183,78 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
   );
 }
 
-/* ---------- Purchase ---------- */
+/* ---------- Purchase (professional) ---------- */
 function PurchaseForm({ branchId, shared }: { branchId: string; shared: SharedProps }) {
-  const products = useLiveQuery(() => localdb.products.toArray(), [], []);
+  const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
   const [pid, setPid] = useState("");
   const [supplier, setSupplier] = useState("");
   const [qty, setQty] = useState(1);
   const [cost, setCost] = useState(0);
+  const [invoiceNo, setInvoiceNo] = useState("");
+  const [pay, setPay] = useState<"cash" | "credit">("cash");
+  const [note, setNote] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const selected = products.find((x) => x.id === pid) ?? products[0];
   useMemo(() => { if (selected) setCost(selected.cost_price); }, [selected?.id]);
 
-  const recent = live(useLiveQuery(
-    () => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []
-  )).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 15);
+  const allPurch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []))
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const today = rangeStart("today");
+  const todaySpend = sum(allPurch.filter((p) => new Date(p.created_at).getTime() >= today), "total");
+  const suppliers = [...new Set(allPurch.map((p) => p.supplier).filter(Boolean))] as string[];
   const delPurch = async (id: string) => { if (confirmDel("purchase")) { await softDelete("purchases", id); toast("Deleted"); shared.onSync(); } };
 
   const save = async () => {
-    if (!selected) return toast("No products loaded");
+    if (!selected) return toast("No products for this branch");
+    if (!supplier.trim()) return toast("Enter supplier / company");
     if (!qty || qty < 1) return toast("Enter a valid quantity");
-    const row: Purchase = {
-      id: crypto.randomUUID(), branch_id: branchId, created_by: shared.profile.id,
-      product_id: selected.id, product_name: selected.name, supplier: supplier.trim(),
-      qty: Number(qty), cost: Number(cost), total: Number(qty) * Number(cost),
-      created_at: new Date().toISOString(), _synced: 0,
-    };
-    await localdb.purchases.add(row);
+    await createPurchase(branchId, shared.profile.id, {
+      productId: selected.id, productName: selected.name, supplier, qty, cost,
+      invoiceNo, paymentMode: pay, note, date,
+    });
     toast("Purchase saved" + (shared.online ? "" : " offline"));
-    setQty(1); setSupplier("");
-    shared.onSync();
+    setQty(1); setInvoiceNo(""); setNote(""); shared.onSync();
   };
 
   return (
     <>
-      <h1 className="page-title" style={{ fontSize: 22 }}>New Purchase</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <h1 className="page-title" style={{ fontSize: 22 }}>New Purchase</h1>
+        <span style={{ fontSize: 13, color: "var(--muted)" }}>Today: <b style={{ color: "var(--red)" }}>{money(todaySpend)}</b></span>
+      </div>
       <div className="card card-pad"><div className="form-grid">
+        <div className="field"><label>Supplier / Company</label>
+          <input list="sup-list" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="e.g. Guwahati Distributors" />
+          <datalist id="sup-list">{suppliers.map((s) => <option key={s} value={s} />)}</datalist>
+        </div>
         <div className="field"><label>Product</label>
           <select value={selected?.id ?? ""} onChange={(e) => { setPid(e.target.value); const pr = products.find((x) => x.id === e.target.value); if (pr) setCost(pr.cost_price); }}>
-            {products.map((pr) => <option key={pr.id} value={pr.id}>{pr.name} — cost {money(pr.cost_price)}</option>)}
+            {products.length ? products.map((pr) => <option key={pr.id} value={pr.id}>{pr.name} — cost {money(pr.cost_price)}</option>) : <option>No products — owner must add first</option>}
           </select>
         </div>
-        <div className="field"><label>Supplier</label><input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Supplier name" /></div>
         <div className="qty-row">
           <div className="field"><label>Quantity</label><input type="number" inputMode="numeric" min={1} value={qty} onChange={(e) => setQty(+e.target.value)} /></div>
           <div className="field"><label>Cost each</label><input type="number" inputMode="numeric" value={cost} onChange={(e) => setCost(+e.target.value)} /></div>
         </div>
+        <div className="qty-row">
+          <div className="field"><label>Supplier bill no.</label><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="optional" /></div>
+          <div className="field"><label>Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+        </div>
+        <div className="field"><label>Payment to supplier</label>
+          <div className="pay-select">
+            {(["cash", "credit"] as const).map((m) => <button key={m} className={"pay-opt" + (pay === m ? " active" : "")} onClick={() => setPay(m)}>{m === "credit" ? "Credit (owed)" : "Cash / Paid"}</button>)}
+          </div>
+        </div>
+        <div className="field"><label>Note (optional)</label><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. damaged 2 pcs" /></div>
         <div className="total-preview">{money((qty || 0) * (cost || 0))}</div>
         <button className="btn" onClick={save}>Save Purchase</button>
       </div></div>
       <div className="card" style={{ marginTop: 16 }}>
         <div className="card-head"><h3>Recent purchases</h3></div>
         <div className="card-pad" style={{ paddingTop: 6 }}>
-          {recent.length ? recent.map((x) => (
-            <div className="row" key={x.id}><div><div className="main">{x.product_name} × {x.qty}</div><div className="sub">{x.supplier} · {dateStr(x.created_at)}{x._synced === 0 ? " · ⏳" : ""}</div></div>
+          {allPurch.length ? allPurch.slice(0, 20).map((x) => (
+            <div className="row" key={x.id}><div><div className="main">{x.supplier || "—"} · {x.product_name} × {x.qty}</div>
+              <div className="sub">{dateStr(x.created_at)}{x.invoice_no ? " · #" + x.invoice_no : ""} · {(x.payment_mode || "cash") === "credit" ? "CREDIT" : "PAID"}{x._synced === 0 ? " · ⏳" : ""}</div></div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className="amt out">{money(x.total)}</div><button className="del-btn" onClick={() => delPurch(x.id)}>✕</button></div></div>
           )) : <div className="empty">No purchases yet.</div>}
         </div>

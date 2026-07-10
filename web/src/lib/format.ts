@@ -22,8 +22,8 @@ export function prevRange(r: Range): { from: number; to: number } {
   const start = rangeStart(r);
   return { from: start - len, to: start };
 }
-export const rangeLabel = (r: Range) =>
-  ({ today: "Today", week: "This Week", month: "This Month" }[r]);
+export const rangeLabel = (r: string) =>
+  (({ today: "Today", week: "This Week", month: "This Month" } as Record<string, string>)[r] ?? r);
 
 export function pctDelta(now: number, prev: number) {
   if (prev === 0) return now === 0 ? { cls: "flat", txt: "No change" } : { cls: "up", txt: "New activity" };

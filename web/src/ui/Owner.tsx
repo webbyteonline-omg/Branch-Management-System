@@ -11,16 +11,20 @@ import { ChangePasswordModal, ResetStaffPassword, StaffManager } from "./Account
 import { saveProduct, softDelete, restoreRow, saveSettings, addStockAdjustment } from "../lib/writes";
 import { LedgerModal } from "./Ledger";
 import { EditCustomerModal, EditEntryModal } from "./Edits";
-import { downloadCSV } from "../lib/csv";
+import { downloadExcel } from "../lib/excel";
 import { printItemizedBill } from "../lib/invoice";
 import { supabase } from "../lib/supabase";
 
 type View = "dashboard" | "branch" | "customers" | "purchases" | "inventory" | "saleshistory" | "daybook" | "reports" | "settings";
+type ORange = Range | "custom";
+const between = (rows: any[], from: number, to: number) => rows.filter((r) => { const t = new Date(r.created_at).getTime(); return t >= from && t <= to; });
 const inRange = (rows: any[], from: number) => rows.filter((r) => new Date(r.created_at).getTime() >= from);
 const confirmDelete = (what: string) => window.confirm(`Delete this ${what}? It moves to deleted items and can be restored.`);
 
 export function Owner(p: SharedProps) {
-  const [range, setRange] = useState<Range>("today");
+  const [range, setRange] = useState<ORange>("today");
+  const [cFrom, setCFrom] = useState(new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10));
+  const [cTo, setCTo] = useState(new Date().toISOString().slice(0, 10));
   const [view, setView] = useState<View>("dashboard");
   const [branchId, setBranchId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
@@ -37,15 +41,18 @@ export function Owner(p: SharedProps) {
   const [staffMap, setStaffMap] = useState<Record<string, string>>({});
   useEffect(() => { supabase.from("profiles").select("id,name").then(({ data }) => { if (data) setStaffMap(Object.fromEntries(data.map((u: any) => [u.id, u.name]))); }); }, []);
 
-  const from = rangeStart(range);
+  const isCustom = range === "custom";
+  const from = isCustom ? new Date(cFrom).setHours(0, 0, 0, 0) : rangeStart(range as Range);
+  const to = isCustom ? new Date(cTo).setHours(23, 59, 59, 999) : 8640000000000000;
+  const rangeText = isCustom ? `${dateStr(from)} – ${dateStr(to)}` : rangeLabel(range as Range);
   const sales = useMemo(() => live(salesAll), [salesAll]);
   const purchases = useMemo(() => live(purchAll), [purchAll]);
   const bills = useMemo(() => live(billsAll), [billsAll]);
   const expenses = useMemo(() => live(expAll), [expAll]);
   const products = useMemo(() => live(prodAll), [prodAll]);
-  const rSales = useMemo(() => inRange(sales, from), [sales, from]);
-  const rPurch = useMemo(() => inRange(purchases, from), [purchases, from]);
-  const rExp = useMemo(() => inRange(expenses, from), [expenses, from]);
+  const rSales = useMemo(() => between(sales, from, to), [sales, from, to]);
+  const rPurch = useMemo(() => between(purchases, from, to), [purchases, from, to]);
+  const rExp = useMemo(() => between(expenses, from, to), [expenses, from, to]);
   const bmap = useMemo(() => Object.fromEntries(branches.map((b) => [b.id, shortBranch(b.name)])), [branches]);
   const go = (v: View, b: string | null = null) => { setView(v); setBranchId(b); setOpen(false); };
 
@@ -88,7 +95,15 @@ export function Owner(p: SharedProps) {
               {(["today", "week", "month"] as Range[]).map((r) => (
                 <button key={r} className={range === r ? "active" : ""} onClick={() => setRange(r)}>{rangeLabel(r)}</button>
               ))}
+              <button className={isCustom ? "active" : ""} onClick={() => setRange("custom")}>Custom</button>
             </div>
+            {isCustom && (
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <input className="search" style={{ width: "auto" }} type="date" value={cFrom} onChange={(e) => setCFrom(e.target.value)} />
+                <span style={{ color: "var(--muted)" }}>–</span>
+                <input className="search" style={{ width: "auto" }} type="date" value={cTo} onChange={(e) => setCTo(e.target.value)} />
+              </div>
+            )}
           </div>
           <div className="header-right">
             <span className={"sync-pill " + (pending > 0 ? "pending" : "ok")}><span className="dot" />{pending > 0 ? `${pending} to sync` : "All synced"}</span>
@@ -99,14 +114,14 @@ export function Owner(p: SharedProps) {
         </div>
 
         <div className="content">
-          {view === "dashboard" && <Dashboard {...{ range, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go }} />}
-          {view === "branch" && branchId && <BranchDetail {...{ range, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync: p.onSync }} />}
+          {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go }} />}
+          {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync: p.onSync }} />}
           {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} onSync={p.onSync} />}
-          {view === "purchases" && <PurchasesPage purchAll={purchAll} bmap={bmap} range={range} from={from} onSync={p.onSync} />}
+          {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} onSync={p.onSync} />}
           {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
           {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} settings={settings} branches={branches} staffMap={staffMap} />}
-          {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={range} onSync={p.onSync} />}
-          {view === "reports" && <ReportsPage rSales={rSales} range={range} staffMap={staffMap} />}
+          {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} onSync={p.onSync} />}
+          {view === "reports" && <ReportsPage rSales={rSales} range={rangeText} staffMap={staffMap} />}
           {view === "settings" && <SettingsPage prodAll={prodAll} online={p.online} settings={settings} onSync={p.onSync} branches={branches} />}
         </div>
       </div>
@@ -115,15 +130,15 @@ export function Owner(p: SharedProps) {
 }
 
 /* ---------- dashboard ---------- */
-function Dashboard({ range, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go }: any) {
+function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go }: any) {
   const openBills = bills.filter((b: any) => b.status === "unpaid");
   const totalDue = sum(openBills, "due_amount");
   const custNames = new Set(rSales.map((s: any) => s.customer_name).filter((n: string) => n && n !== "Walk-in"));
-  const pr = prevRange(range);
-  const pSales = sales.filter((s: any) => { const t = new Date(s.created_at).getTime(); return t >= pr.from && t < pr.to; });
-  const pPurch = purchases.filter((s: any) => { const t = new Date(s.created_at).getTime(); return t >= pr.from && t < pr.to; });
-  const dS = pctDelta(sum(rSales, "total"), sum(pSales, "total"));
-  const dP = pctDelta(sum(rPurch, "total"), sum(pPurch, "total"));
+  const pr = isCustom ? null : prevRange(range);
+  const pSales = pr ? sales.filter((s: any) => { const t = new Date(s.created_at).getTime(); return t >= pr.from && t < pr.to; }) : [];
+  const pPurch = pr ? purchases.filter((s: any) => { const t = new Date(s.created_at).getTime(); return t >= pr.from && t < pr.to; }) : [];
+  const dS = pr ? pctDelta(sum(rSales, "total"), sum(pSales, "total")) : { cls: "flat", txt: "selected period" };
+  const dP = pr ? pctDelta(sum(rPurch, "total"), sum(pPurch, "total")) : { cls: "flat", txt: "selected period" };
 
   // low stock across branches
   const low: { name: string; branch: string; qty: number }[] = [];
@@ -136,7 +151,7 @@ function Dashboard({ range, branches, rSales, rPurch, rExp, bills, sales, purcha
   return (
     <>
       <h1 className="page-title">Head Office Overview</h1>
-      <p className="page-sub">Aggregated data across both branches for {rangeLabel(range).toLowerCase()}.</p>
+      <p className="page-sub">Aggregated data across both branches for {String(label).toLowerCase()}.</p>
       <div className="stats">
         <Stat label="Total Sales" value={money(sum(rSales, "total"))} delta={dS} icon="sales" />
         <Stat label="Unpaid Bills" value={String(openBills.length)} delta={{ cls: "down", txt: money(totalDue) + " due" }} icon="bill" />
@@ -164,7 +179,7 @@ function Dashboard({ range, branches, rSales, rPurch, rExp, bills, sales, purcha
                 <button className="link" onClick={() => go("branch", b.id)}>View details →</button>
               </div>
               <div className="branch-metrics">
-                <div className="metric"><div className="m-label">Sales · {rangeLabel(range)}</div><div className="m-value green">{money(sum(bs, "total"))}</div></div>
+                <div className="metric"><div className="m-label">Sales · {label}</div><div className="m-value green">{money(sum(bs, "total"))}</div></div>
                 <div className="metric"><div className="m-label">Active staff</div><div className="m-value">{b.active_staff}</div></div>
               </div>
               <div className="topitems">
@@ -276,7 +291,7 @@ function CustomersPage({ custAll, bmap, onSync }: any) {
   const [editC, setEditC] = useState<any>(null);
   let rows = showDeleted ? deletedOnly(custAll) : live(custAll);
   if (q.trim()) rows = rows.filter((c: any) => (c.name + (c.phone || "")).toLowerCase().includes(q.toLowerCase()));
-  const exportCsv = () => downloadCSV("customers", ["Name", "Phone", "Branch", "Balance due"], rows.map((c: any) => [c.name, c.phone || "", bmap[c.branch_id] || "", c.balance_due]));
+  const exportCsv = () => downloadExcel("customers", ["Name", "Phone", "Branch", "Balance due"], rows.map((c: any) => [c.name, c.phone || "", bmap[c.branch_id] || "", c.balance_due]));
   const act = async (c: any) => {
     if (showDeleted) { await restoreRow("customers", c.id); toast("Restored"); }
     else if (confirmDelete("customer")) { await softDelete("customers", c.id); toast("Deleted"); }
@@ -310,30 +325,75 @@ function CustomersPage({ custAll, bmap, onSync }: any) {
   );
 }
 
-/* ---------- purchases ---------- */
-function PurchasesPage({ purchAll, bmap, range, from, onSync }: any) {
+/* ---------- purchases (professional) ---------- */
+function PurchasesPage({ rPurch, purchAll, bmap, label, branches, onSync }: any) {
   const [showDeleted, setShowDeleted] = useState(false);
-  const base = showDeleted ? deletedOnly(purchAll) : live(purchAll);
-  const rows = (showDeleted ? base : inRange(base, from)).sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const [branchF, setBranchF] = useState("all");
+  const [q, setQ] = useState("");
+  const [editRow, setEditRow] = useState<any>(null);
+  const brs = branches.filter((b: any) => b.id !== "ho");
+
+  let rows: any[] = showDeleted ? deletedOnly(purchAll) : rPurch;
+  if (branchF !== "all") rows = rows.filter((x: any) => x.branch_id === branchF);
+  if (q.trim()) rows = rows.filter((x: any) => ((x.supplier || "") + x.product_name + (x.invoice_no || "")).toLowerCase().includes(q.toLowerCase()));
+  rows = [...rows].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+  const total = rows.reduce((a, x) => a + x.total, 0);
+  const credit = rows.filter((x) => (x.payment_mode || "cash") === "credit").reduce((a, x) => a + x.total, 0);
+  // supplier-wise summary
+  const bySup: Record<string, number> = {};
+  rows.forEach((x) => { const s = x.supplier || "—"; bySup[s] = (bySup[s] || 0) + x.total; });
+  const supTop = Object.entries(bySup).sort((a, b) => b[1] - a[1]).slice(0, 6);
+
   const act = async (x: any) => {
     if (showDeleted) { await restoreRow("purchases", x.id); toast("Restored"); }
     else if (confirmDelete("purchase")) { await softDelete("purchases", x.id); toast("Deleted"); }
     onSync();
   };
+  const exportXls = () => downloadExcel("purchases", ["Date", "Branch", "Supplier", "Item", "Qty", "Cost each", "Total", "Bill no", "Payment", "Note"],
+    rows.map((x) => [dateStr(x.created_at), bmap[x.branch_id] || "", x.supplier || "", x.product_name, x.qty, x.cost, x.total, x.invoice_no || "", (x.payment_mode || "cash").toUpperCase(), x.note || ""]));
+
   return (
-    <><h1 className="page-title">Purchases</h1><p className="page-sub">Stock bought · {showDeleted ? "deleted items" : rangeLabel(range).toLowerCase()}.</p>
+    <><h1 className="page-title">Purchases</h1><p className="page-sub">What each branch bought, from whom, when · {showDeleted ? "deleted items" : String(label).toLowerCase()}.</p>
+      <div className="stats" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+        <div className="stat"><div className="label">Total purchases</div><div className="value" style={{ color: "var(--red)" }}>{money(total)}</div></div>
+        <div className="stat"><div className="label">On credit (owed)</div><div className="value">{money(credit)}</div></div>
+        <div className="stat"><div className="label">Records</div><div className="value">{rows.length}</div></div>
+      </div>
+
+      {supTop.length > 0 && (
+        <div className="card card-pad" style={{ marginBottom: 16 }}>
+          <h3 style={{ margin: "0 0 10px", fontSize: 14 }}>Top suppliers</h3>
+          <div className="chips">{supTop.map(([s, v]) => <span className="chip" key={s}>{s} · <b>{money(v)}</b></span>)}</div>
+        </div>
+      )}
+
       <div className="card">
-        <div className="card-head"><h3>{rows.length} record{rows.length === 1 ? "" : "s"}</h3>
-          <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted items"}</button></div>
+        <div className="card-head">
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <select className="search" style={{ width: "auto" }} value={branchF} onChange={(e) => setBranchF(e.target.value)}>
+              <option value="all">All branches</option>{brs.map((b: any) => <option key={b.id} value={b.id}>{shortBranch(b.name)}</option>)}
+            </select>
+            <input className="search" placeholder="Search supplier / item / bill…" value={q} onChange={(e) => setQ(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="edit-btn" onClick={exportXls}>Export Excel</button>
+            <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
+          </div>
+        </div>
         <div className="table-wrap"><table>
-          <thead><tr><th>Date</th><th>Branch</th><th>Item</th><th>Supplier</th><th className="r">Cost</th><th className="r"></th></tr></thead>
-          <tbody>{rows.length ? rows.map((x: any) => (
+          <thead><tr><th>Date</th><th>Branch</th><th>Supplier</th><th>Item</th><th className="r">Qty</th><th className="r">Total</th><th>Bill no</th><th>Pay</th><th className="r"></th></tr></thead>
+          <tbody>{rows.length ? rows.slice(0, 300).map((x: any) => (
             <tr key={x.id}><td>{dateStr(x.created_at)}</td><td><span className="b-tag">{bmap[x.branch_id]}</span></td>
-              <td>{x.product_name} × {x.qty}</td><td>{x.supplier}</td><td className="r amt out">{money(x.total)}</td>
-              <td className="r"><button className={showDeleted ? "pay-btn" : "del-btn"} onClick={() => act(x)}>{showDeleted ? "Restore" : "✕"}</button></td></tr>
-          )) : <tr><td colSpan={6}><div className="empty">Nothing here.</div></td></tr>}</tbody>
+              <td>{x.supplier || "—"}</td><td>{x.product_name}{x.note ? <div style={{ color: "var(--faint)", fontSize: 11 }}>{x.note}</div> : null}</td>
+              <td className="r">{x.qty}</td><td className="r amt out">{money(x.total)}</td>
+              <td>{x.invoice_no || "—"}</td><td><span className="badge role">{(x.payment_mode || "cash").toUpperCase()}</span></td>
+              <td className="r" style={{ whiteSpace: "nowrap" }}>{!showDeleted && <button className="edit-btn" onClick={() => setEditRow(x)}>Edit</button>}{" "}
+                <button className={showDeleted ? "pay-btn" : "del-btn"} onClick={() => act(x)}>{showDeleted ? "Restore" : "✕"}</button></td></tr>
+          )) : <tr><td colSpan={9}><div className="empty">Nothing here.</div></td></tr>}</tbody>
         </table></div>
-      </div></>
+      </div>
+      {editRow && <EditEntryModal table="purchases" row={editRow} onClose={() => setEditRow(null)} onSync={onSync} />}</>
   );
 }
 
@@ -406,7 +466,7 @@ function SalesHistoryPage({ sales, bmap, settings, branches, staffMap }: any) {
   const bills = [...groups.values()].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 200);
 
   const reprint = (g: any) => printItemizedBill(g.key.startsWith("B-") ? g.key : "—", g.items.map((s: any) => ({ name: s.product_name, qty: s.qty, price: s.price, discount: s.discount })), g.cust, g.pay, settings, bname(g.br), 0);
-  const exportCsv = () => downloadCSV("sales-bills", ["Bill", "Date", "Branch", "Customer", "Payment", "Staff", "Items", "Total"],
+  const exportCsv = () => downloadExcel("sales-bills", ["Bill", "Date", "Branch", "Customer", "Payment", "Staff", "Items", "Total"],
     bills.map((g) => [g.key, dateStr(g.t) + " " + timeStr(g.t), bmap[g.br] || "", g.cust, g.pay.toUpperCase(), staffMap[g.staff] || "", g.items.length, g.total]));
 
   return (
@@ -442,7 +502,7 @@ function DaybookPage({ rSales, rPurch, rExp, bmap, range, onSync }: any) {
     ...rPurch.map((x: any) => ({ table: "purchases", id: x.id, row: x, t: x.created_at, br: x.branch_id, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out", what: "purchase" })),
     ...rExp.map((x: any) => ({ table: "expenses", id: x.id, row: x, t: x.created_at, br: x.branch_id, label: `Expense · ${x.category}`, amt: x.amount, dir: "out", what: "expense" })),
   ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime());
-  const exportCsv = () => downloadCSV("daybook", ["Date", "Time", "Branch", "Detail", "In/Out", "Amount"],
+  const exportCsv = () => downloadExcel("daybook", ["Date", "Time", "Branch", "Detail", "In/Out", "Amount"],
     items.map((i: any) => [dateStr(i.t), timeStr(i.t), bmap[i.br] || "", i.label, i.dir === "in" ? "IN" : "OUT", i.amt]));
   return (
     <><h1 className="page-title">Day Book</h1><p className="page-sub">Combined money in & out · {rangeLabel(range).toLowerCase()}.</p>
@@ -556,11 +616,13 @@ function SettingsPage({ prodAll, online, settings, onSync, branches }: any) {
           </div>
         </div>
         <div className="table-wrap"><table>
-          <thead><tr><th>Product</th><th>Unit</th><th className="r">Cost</th><th className="r">Sale price</th><th className="r">Low-stock ≤</th><th className="r"></th></tr></thead>
+          <thead><tr><th>Product</th><th>Branch</th><th>Unit</th><th className="r">Cost</th><th className="r">Sale price</th><th className="r">Low ≤</th><th className="r"></th></tr></thead>
           <tbody>
             {rows.length ? rows.map((pr: Product) => (
               <tr key={pr.id}>
-                <td>{pr.name}</td><td>{pr.unit}</td>
+                <td>{pr.name}</td>
+                <td><span className="b-tag">{pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All"}</span></td>
+                <td>{pr.unit}</td>
                 <td className="r">{money(pr.cost_price)}</td>
                 <td className="r amt in">{money(pr.sale_price)}</td>
                 <td className="r">{pr.low_stock_at ?? 5}</td>
@@ -568,7 +630,7 @@ function SettingsPage({ prodAll, online, settings, onSync, branches }: any) {
                   ? <button className="pay-btn" onClick={() => restoreProd(pr)}>Restore</button>
                   : <><button className="edit-btn" onClick={() => setEdit({ ...pr })}>Edit</button> <button className="del-btn" onClick={() => delProd(pr)}>✕</button></>}</td>
               </tr>
-            )) : <tr><td colSpan={6}><div className="empty">Nothing here.</div></td></tr>}
+            )) : <tr><td colSpan={7}><div className="empty">Nothing here.</div></td></tr>}
           </tbody>
         </table></div>
       </div>
@@ -594,6 +656,12 @@ function SettingsPage({ prodAll, online, settings, onSync, branches }: any) {
         <Modal title={edit.id ? "Edit product" : "Add product"} onClose={() => setEdit(null)}>
           <div className="form-grid">
             <div className="field"><label>Name</label><input value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="Product name" /></div>
+            <div className="field"><label>Branch (which branch sells this)</label>
+              <select value={edit.branch_id ?? ""} onChange={(e) => setEdit({ ...edit, branch_id: e.target.value || null })}>
+                <option value="">All branches</option>
+                {branches.filter((b: any) => b.id !== "ho").map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
             <div className="qty-row">
               <div className="field"><label>Unit</label><input value={edit.unit ?? ""} onChange={(e) => setEdit({ ...edit, unit: e.target.value })} placeholder="box / kg" /></div>
               <div className="field"><label>Low-stock alert ≤</label><input type="number" inputMode="numeric" value={edit.low_stock_at ?? 5} onChange={(e) => setEdit({ ...edit, low_stock_at: +e.target.value })} /></div>

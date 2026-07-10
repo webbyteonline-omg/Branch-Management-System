@@ -31,3 +31,8 @@ export function topItems(sales: Sale[], n = 3): string[] {
 }
 
 export const shortBranch = (name: string) => name.replace(" Branch", "");
+
+// Products available at a branch: its own products + shared (branch_id null).
+export function productsForBranch<T extends { branch_id?: string | null; deleted_at?: string | null }>(products: T[], branchId: string): T[] {
+  return products.filter((p) => !p.deleted_at && (!p.branch_id || p.branch_id === branchId));
+}

@@ -42,10 +42,12 @@ create table if not exists public.products (
   sale_price   numeric(12,2) not null default 0,
   cost_price   numeric(12,2) not null default 0,
   low_stock_at numeric(12,2) not null default 5,   -- alert threshold
+  branch_id    text references public.branches(id),-- null = available to all branches
   active       boolean not null default true,
   created_at   timestamptz not null default now(),
   deleted_at   timestamptz                         -- soft delete
 );
+alter table public.products add column if not exists branch_id text references public.branches(id);
 
 -- Transactional tables use a CLIENT-GENERATED uuid as primary key.
 -- The phone creates the id offline; sync does an upsert -> the same
@@ -81,9 +83,15 @@ create table if not exists public.purchases (
   qty           numeric(12,2) not null,
   cost          numeric(12,2) not null,
   total         numeric(12,2) not null,
+  invoice_no    text,                              -- supplier's bill number
+  payment_mode  text not null default 'cash',      -- cash | credit (owed to supplier)
+  note          text,
   created_at    timestamptz not null default now(),
   deleted_at    timestamptz
 );
+alter table public.purchases add column if not exists invoice_no text;
+alter table public.purchases add column if not exists payment_mode text not null default 'cash';
+alter table public.purchases add column if not exists note text;
 
 create table if not exists public.customers (
   id          uuid primary key default gen_random_uuid(),

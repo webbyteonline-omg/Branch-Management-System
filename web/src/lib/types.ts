@@ -22,6 +22,7 @@ export interface Product {
   sale_price: number;
   cost_price: number;
   low_stock_at?: number;
+  branch_id?: string | null; // null = all branches
   active?: boolean;
   deleted_at?: string | null;
 }
@@ -54,6 +55,9 @@ export interface Purchase {
   qty: number;
   cost: number;
   total: number;
+  invoice_no?: string | null;
+  payment_mode?: "cash" | "credit";
+  note?: string | null;
   created_at: string;
   deleted_at?: string | null;
   _synced?: 0 | 1;

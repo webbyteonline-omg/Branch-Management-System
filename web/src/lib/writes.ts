@@ -38,11 +38,30 @@ export interface CartItem { product_id: string; name: string; qty: number; price
 /** POS billing: saves a multi-item bill as grouped sales rows sharing one
  *  bill_no + payment mode. Applies per-item discount % and a bill-level GST %.
  *  Credit bills also create an udhaar entry and bump the customer balance. */
+export function branchCode(branch: { id: string; name?: string } | undefined, id: string): string {
+  const base = (branch?.name || id).replace(/\s*branch\s*/i, "").trim();
+  return base.slice(0, 3).toUpperCase() || id.slice(0, 3).toUpperCase();
+}
+
+/** Next sequential bill number for a branch, e.g. SEP-0001 (per branch). */
+export async function nextBillNo(branchId: string): Promise<string> {
+  const branch = await localdb.branches.get(branchId);
+  const prefix = branchCode(branch, branchId);
+  const rows = await localdb.sales.where("branch_id").equals(branchId).toArray();
+  const re = new RegExp("^" + prefix + "-(\\d+)$");
+  let max = 0;
+  for (const bn of new Set(rows.map((s) => s.bill_no).filter(Boolean) as string[])) {
+    const m = bn.match(re);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  return `${prefix}-${String(max + 1).padStart(4, "0")}`;
+}
+
 export async function createSaleBill(
   branchId: string, userId: string, customerName: string,
   paymentMode: "cash" | "upi" | "credit", items: CartItem[], gstPercent = 0,
 ): Promise<{ billNo: string; total: number }> {
-  const billNo = "B-" + Date.now().toString(36).toUpperCase().slice(-7);
+  const billNo = await nextBillNo(branchId);
   const cust = customerName.trim() || "Walk-in";
   const gst = 1 + (Number(gstPercent) || 0) / 100;
   let total = 0;
@@ -85,6 +104,21 @@ export async function settleCustomerDues(branchId: string, customerName: string,
   }
   await bumpCustomerBalance(branchId, customerName, -applied);
   return applied;
+}
+
+export interface PurchaseInput {
+  productId: string; productName: string; supplier: string;
+  qty: number; cost: number; invoiceNo?: string; paymentMode?: "cash" | "credit"; note?: string; date?: string;
+}
+/** Record a purchase — offline-first. */
+export async function createPurchase(branchId: string, userId: string, inp: PurchaseInput): Promise<void> {
+  await localdb.purchases.add({
+    id: uuid(), branch_id: branchId, created_by: userId, product_id: inp.productId,
+    product_name: inp.productName, supplier: inp.supplier.trim(), qty: Number(inp.qty), cost: Number(inp.cost),
+    total: Number(inp.qty) * Number(inp.cost), invoice_no: inp.invoiceNo?.trim() || null,
+    payment_mode: inp.paymentMode || "cash", note: inp.note?.trim() || null,
+    created_at: inp.date ? new Date(inp.date).toISOString() : new Date().toISOString(), deleted_at: null, _synced: 0,
+  });
 }
 
 /** Stock adjustment (opening stock / wastage) — recorded as a zero-cost
@@ -147,7 +181,8 @@ export async function saveProduct(p: Partial<Product> & { name: string }, online
   const row = {
     id: p.id ?? crypto.randomUUID(),
     name: p.name.trim(), unit: p.unit || "pcs",
-    sale_price: Number(p.sale_price) || 0, cost_price: Number(p.cost_price) || 0, active: true,
+    sale_price: Number(p.sale_price) || 0, cost_price: Number(p.cost_price) || 0,
+    low_stock_at: Number(p.low_stock_at ?? 5), branch_id: p.branch_id ?? null, active: true,
   };
   const { error } = await supabase.from("products").upsert(row);
   if (error) return false;

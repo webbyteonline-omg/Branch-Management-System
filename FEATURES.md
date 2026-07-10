@@ -40,6 +40,18 @@ without internet and auto-syncs when back online.
 - **Branch-level security** — enforced in the database (RLS): staff can't touch another branch's data.
 - **Installable PWA** — add to home screen; works like a native app.
 
+## Purchases (professional)
+- **Full purchase records** — supplier/company, product, qty, cost, **supplier bill no.**, date (backdate allowed), **payment to supplier (cash/credit-owed)**, and notes.
+- **Purchase history** (owner) — filter by branch, search supplier/item/bill, totals (spent + amount owed on credit), **top-suppliers summary**, edit/delete, **Excel export**.
+
+## Branch independence
+- The two branches are fully separate — **each branch has its own products** (owner assigns a product to a branch, or "All"). Staff only see and bill their own branch's items. No stock or data is shared between branches.
+
+## Billing & reporting extras
+- **Sequential bill numbers per branch** (e.g. SEP-0001, DIR-0001).
+- **Custom date-range picker** (owner) alongside Today / Week / Month.
+- **Excel export** on Customers, Day Book, Sales history and Purchases.
+
 ## Recently added
 - **Bulk payment** — settle a customer's dues across all their bills at once (oldest first), from the ledger.
 - **Sales / Bill history** (owner) — every bill grouped by bill number, filter by payment type, **reprint any invoice**, export CSV.
@@ -48,8 +60,7 @@ without internet and auto-syncs when back online.
 - **Stock adjustments** (owner Inventory) — set opening stock or record wastage per branch.
 
 ## Roadmap (next)
-- Sequential bill-number series per branch (HP-001…)
-- Custom date-range picker & export to Excel/PDF
-- Stock transfer between branches
 - Barcode scanning for fast billing
 - WhatsApp bill / payment reminders to customers
+- PDF export & scheduled email reports
+- (Stock transfer between branches intentionally excluded — branches are independent.)
