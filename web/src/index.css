@@ -182,6 +182,9 @@ tbody tr:hover { background: var(--surface-2); }
 .form-grid { display: grid; gap: 14px; }
 .qty-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .total-preview { font-size: 24px; font-weight: 800; color: var(--accent); text-align: center; padding: 6px 0; letter-spacing: -.5px; }
+.pay-select { display: flex; gap: 8px; }
+.pay-opt { flex: 1; padding: 11px 6px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-weight: 600; font-size: 13px; }
+.pay-opt.active { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
 .stock-hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; }
 .stock-hint b { color: var(--green); }
 .stock-hint b.low { color: var(--red); }

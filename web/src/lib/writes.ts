@@ -28,6 +28,38 @@ export async function addExpense(branchId: string, createdBy: string, category: 
   await localdb.expenses.add(row);
 }
 
+export interface CartItem { product_id: string; name: string; qty: number; price: number; }
+
+/** POS billing: saves a multi-item bill as grouped sales rows sharing one
+ *  bill_no + payment mode. Credit bills also create an udhaar entry and bump
+ *  the customer balance. Returns the bill_no for the printed invoice. */
+export async function createSaleBill(
+  branchId: string, userId: string, customerName: string,
+  paymentMode: "cash" | "upi" | "credit", items: CartItem[],
+): Promise<{ billNo: string; total: number }> {
+  const billNo = "B-" + Date.now().toString(36).toUpperCase().slice(-7);
+  const cust = customerName.trim() || "Walk-in";
+  let total = 0;
+  const now = new Date().toISOString();
+  for (const it of items) {
+    const lineTotal = it.qty * it.price;
+    total += lineTotal;
+    await localdb.sales.add({
+      id: uuid(), branch_id: branchId, created_by: userId, product_id: it.product_id,
+      product_name: it.name, customer_name: cust, qty: it.qty, price: it.price, total: lineTotal,
+      bill_no: billNo, payment_mode: paymentMode, created_at: now, deleted_at: null, _synced: 0,
+    });
+  }
+  if (paymentMode === "credit") {
+    await localdb.bills.add({
+      id: uuid(), branch_id: branchId, customer_name: cust, amount: total, paid: 0,
+      due_amount: total, status: "unpaid", created_at: now, deleted_at: null, _synced: 0,
+    });
+    await bumpCustomerBalance(branchId, cust, total);
+  }
+  return { billNo, total };
+}
+
 /** Owner company profile for invoices (online write, RLS: owner only). */
 export async function saveSettings(s: Settings, online: boolean): Promise<boolean> {
   if (!online) return false;

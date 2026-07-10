@@ -9,6 +9,7 @@ import { Modal } from "./Modal";
 import { toast } from "./Toast";
 import { ChangePasswordModal, ResetStaffPassword, StaffManager } from "./Account";
 import { saveProduct, softDelete, restoreRow, saveSettings } from "../lib/writes";
+import { LedgerModal } from "./Ledger";
 
 type View = "dashboard" | "branch" | "customers" | "purchases" | "inventory" | "daybook" | "reports" | "settings";
 const inRange = (rows: any[], from: number) => rows.filter((r) => new Date(r.created_at).getTime() >= from);
@@ -187,7 +188,7 @@ function Stat({ label, value, delta, icon }: { label: string; value: string; del
 function TxnTable({ rSales, rPurch, bmap }: any) {
   const [q, setQ] = useState("");
   let rows = [
-    ...rSales.map((s: any) => ({ t: s.created_at, br: s.branch_id, type: "Sale", who: s.customer_name || "Walk-in", amt: s.total, dir: "in", synced: s._synced })),
+    ...rSales.map((s: any) => ({ t: s.created_at, br: s.branch_id, type: s.payment_mode ? `Sale · ${String(s.payment_mode).toUpperCase()}` : "Sale", who: s.customer_name || "Walk-in", amt: s.total, dir: "in", synced: s._synced })),
     ...rPurch.map((x: any) => ({ t: x.created_at, br: x.branch_id, type: "Purchase", who: x.supplier || "—", amt: x.total, dir: "out", synced: x._synced })),
   ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime());
   if (q.trim()) rows = rows.filter((r) => (r.who + r.type + (bmap[r.br] || "")).toLowerCase().includes(q.toLowerCase()));
@@ -263,6 +264,7 @@ function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, 
 function CustomersPage({ custAll, bmap, onSync }: any) {
   const [showDeleted, setShowDeleted] = useState(false);
   const [q, setQ] = useState("");
+  const [ledger, setLedger] = useState<{ branchId: string; name: string } | null>(null);
   let rows = showDeleted ? deletedOnly(custAll) : live(custAll);
   if (q.trim()) rows = rows.filter((c: any) => (c.name + (c.phone || "")).toLowerCase().includes(q.toLowerCase()));
   const act = async (c: any) => {
@@ -285,10 +287,13 @@ function CustomersPage({ custAll, bmap, onSync }: any) {
           <tbody>{rows.length ? rows.map((c: any) => (
             <tr key={c.id}><td>{c.name}</td><td>{c.phone}</td><td><span className="b-tag">{bmap[c.branch_id]}</span></td>
               <td className={"r amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) : "Clear"}</td>
-              <td className="r"><button className={showDeleted ? "pay-btn" : "del-btn"} onClick={() => act(c)}>{showDeleted ? "Restore" : "✕"}</button></td></tr>
+              <td className="r" style={{ whiteSpace: "nowrap" }}>
+                {!showDeleted && <button className="edit-btn" onClick={() => setLedger({ branchId: c.branch_id, name: c.name })}>Ledger</button>}{" "}
+                <button className={showDeleted ? "pay-btn" : "del-btn"} onClick={() => act(c)}>{showDeleted ? "Restore" : "✕"}</button></td></tr>
           )) : <tr><td colSpan={5}><div className="empty">Nothing here.</div></td></tr>}</tbody>
         </table></div>
-      </div></>
+      </div>
+      {ledger && <LedgerModal branchId={ledger.branchId} name={ledger.name} onClose={() => setLedger(null)} />}</>
   );
 }
 

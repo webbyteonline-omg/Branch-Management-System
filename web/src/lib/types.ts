@@ -36,6 +36,8 @@ export interface Sale {
   qty: number;
   price: number;
   total: number;
+  bill_no?: string | null;
+  payment_mode?: "cash" | "upi" | "credit";
   created_at: string;
   deleted_at?: string | null;
   _synced?: 0 | 1; // local-only flag (not sent to server)

@@ -19,7 +19,8 @@ without internet and auto-syncs when back online.
 - **Live realtime** — staff activity appears on the dashboard within seconds.
 
 ## Staff (mobile, offline-first)
-- **New Sale** — one-tap product, auto price, live stock shown, optional customer.
+- **Billing (POS)** — build a bill with **multiple items**, pick payment mode (**Cash / UPI / Credit-udhaar**), see live stock, then **Save** or **Save & Print** an itemized invoice with a bill number. Credit bills auto-create the udhaar + customer balance.
+- **Customer ledger (khata)** — tap any customer to see their full purchase & bill history and outstanding balance.
 - **New Purchase** — record stock bought from suppliers.
 - **Bills / Udhaar** — create bills, record payments (auto-updates customer balance), **print invoice / save PDF**, delete.
 - **Customers** — add customers, view balances, delete.
@@ -34,8 +35,10 @@ without internet and auto-syncs when back online.
 - **Installable PWA** — add to home screen; works like a native app.
 
 ## Roadmap (next)
+- Bill history + reprint / edit past bills; sequential bill-number series per branch
+- Staff-wise sales report (who sold how much)
 - Custom date-range reports & export to Excel/PDF
-- Customer ledger (full khata per customer) & WhatsApp reminders
-- Stock transfer between branches
+- GST / tax on bills; discount per item
+- Stock adjustments (opening stock, wastage) & stock transfer between branches
 - Barcode scanning for fast billing
-- Staff management screen inside the app
+- WhatsApp bill / payment reminders to customers

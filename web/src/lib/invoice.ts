@@ -1,6 +1,54 @@
 import type { Bill, Settings } from "./types";
 import { money } from "./format";
 
+export interface InvoiceLine { name: string; qty: number; price: number; }
+
+/** Itemized POS invoice (multi-product bill) — print / save-as-PDF. */
+export function printItemizedBill(
+  billNo: string, lines: InvoiceLine[], customer: string,
+  paymentMode: string, settings: Settings | undefined, branchName: string,
+) {
+  const co = settings?.company || "My Shop";
+  const when = new Date().toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  const total = lines.reduce((a, l) => a + l.qty * l.price, 0);
+  const rows = lines.map((l) => `<tr><td>${escapeHtml(l.name)}</td><td style="text-align:center">${l.qty}</td><td style="text-align:right">${money(l.price)}</td><td style="text-align:right">${money(l.qty * l.price)}</td></tr>`).join("");
+  const html = `<!doctype html><html><head><meta charset="utf-8"/><title>${billNo}</title>
+  <style>
+    *{font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#0f172a}
+    body{max-width:440px;margin:0 auto;padding:22px}
+    h1{font-size:20px;margin:0}.muted{color:#64748b;font-size:12px}
+    .hd{border-bottom:2px solid #0f172a;padding-bottom:12px;margin-bottom:12px}
+    table{width:100%;border-collapse:collapse;margin-top:6px;font-size:13px}
+    th{text-align:left;border-bottom:1px solid #cbd5e1;padding:6px 0;font-size:11px;color:#64748b;text-transform:uppercase}
+    td{padding:7px 0;border-bottom:1px solid #eef1f6}
+    .tot{display:flex;justify-content:space-between;font-weight:700;font-size:17px;border-top:2px solid #0f172a;margin-top:8px;padding-top:10px}
+    .meta{display:flex;justify-content:space-between;font-size:12px;color:#64748b;margin-top:4px}
+    .foot{margin-top:20px;text-align:center;color:#64748b;font-size:12px}
+    @media print{button{display:none}}
+  </style></head><body>
+    <div class="hd"><h1>${escapeHtml(co)}</h1>
+      <div class="muted">${settings?.address ? escapeHtml(settings.address) + " · " : ""}${escapeHtml(settings?.phone || "")}</div>
+      ${settings?.gstin ? `<div class="muted">GSTIN: ${escapeHtml(settings.gstin)}</div>` : ""}
+      <div class="muted">${escapeHtml(branchName)}</div>
+    </div>
+    <div class="meta"><span>Bill: <b>${billNo}</b></span><span>${when}</span></div>
+    <div class="meta"><span>Customer: <b>${escapeHtml(customer)}</b></span><span>Payment: <b>${paymentMode.toUpperCase()}</b></span></div>
+    <table><thead><tr><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="tot"><span>Total</span><span>${money(total)}</span></div>
+    <div class="foot">${escapeHtml(settings?.footer || "Thank you for your business!")}</div>
+    <div style="text-align:center;margin-top:18px"><button onclick="window.print()" style="padding:10px 22px;border:none;border-radius:8px;background:#4f46e5;color:#fff;font-weight:600">Print / Save PDF</button></div>
+    <script>window.onload=()=>setTimeout(()=>window.print(),350)</script>
+  </body></html>`;
+  openPrint(html);
+}
+
+function escapeHtml(s: string) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!)); }
+function openPrint(html: string) {
+  const w = window.open("", "_blank", "width=460,height=720");
+  if (!w) return;
+  w.document.write(html); w.document.close();
+}
+
 /** Opens a clean printable invoice/receipt in a new window and triggers print.
  *  Works on phone and laptop (browser's built-in print / save-as-PDF). */
 export function printInvoice(bill: Bill, settings: Settings | undefined, branchName: string) {

@@ -6,10 +6,11 @@ import { money, dateStr, timeStr, rangeStart } from "../lib/format";
 import { toast } from "./Toast";
 import { Modal } from "./Modal";
 import { ChangePasswordModal } from "./Account";
-import { addCustomer, addBill, recordPayment, addExpense, softDelete } from "../lib/writes";
-import { printInvoice } from "../lib/invoice";
+import { LedgerModal } from "./Ledger";
+import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, type CartItem } from "../lib/writes";
+import { printInvoice, printItemizedBill } from "../lib/invoice";
 import { sum, live, computeStock, type SharedProps } from "./shared";
-import type { Sale, Purchase, Bill as BillT } from "../lib/types";
+import type { Purchase, Bill as BillT } from "../lib/types";
 
 const confirmDel = (what: string) => window.confirm(`Delete this ${what}? It can be restored by the owner.`);
 
@@ -25,7 +26,7 @@ export function Staff(p: SharedProps) {
   const pending = useLiveQuery(() => pendingCount(), [], 0) ?? 0;
 
   const tabs: [Tab, string, string][] = [
-    ["sale", "Sale", "sales"], ["purchase", "Purchase", "cart"],
+    ["sale", "Billing", "sales"], ["purchase", "Purchase", "cart"],
     ["bills", "Bills", "bill"], ["customers", "Customers", "customers"], ["daybook", "Day Book", "day"],
   ];
 
@@ -40,7 +41,7 @@ export function Staff(p: SharedProps) {
         </div>
       </div>
       <div className="m-content">
-        {tab === "sale" && <SaleForm branchId={branchId} shared={p} />}
+        {tab === "sale" && <BillingForm branchId={branchId} shared={p} branchName={branchName} />}
         {tab === "purchase" && <PurchaseForm branchId={branchId} shared={p} />}
         {tab === "bills" && <Bills branchId={branchId} shared={p} branchName={branchName} />}
         {tab === "customers" && <Customers branchId={branchId} shared={p} />}
@@ -68,42 +69,57 @@ export function Staff(p: SharedProps) {
 }
 
 /* ---------- Sale ---------- */
-function SaleForm({ branchId, shared }: { branchId: string; shared: SharedProps }) {
-  const products = useLiveQuery(() => localdb.products.toArray(), [], []);
+function BillingForm({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
+  const products = live(useLiveQuery(() => localdb.products.toArray(), [], []));
+  const branchSales = useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []);
+  const branchPurch = useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []);
+  const customers = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const settings = useLiveQuery(() => localdb.settings.get("main"), [], undefined);
+
   const [pid, setPid] = useState("");
-  const [cust, setCust] = useState("");
   const [qty, setQty] = useState(1);
   const [price, setPrice] = useState(0);
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [cust, setCust] = useState("");
+  const [pay, setPay] = useState<"cash" | "upi" | "credit">("cash");
+  const [saving, setSaving] = useState(false);
 
   const selected = products.find((x) => x.id === pid) ?? products[0];
   useMemo(() => { if (selected) setPrice(selected.sale_price); }, [selected?.id]);
+  const stock = selected ? computeStock(selected.id, branchId, branchSales, branchPurch) : 0;
+  const cartTotal = cart.reduce((a, c) => a + c.qty * c.price, 0);
 
   const today = rangeStart("today");
-  const branchSales = useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []);
-  const branchPurch = useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []);
-  const todays = live(branchSales).filter((s) => new Date(s.created_at).getTime() >= today).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  const stock = selected ? computeStock(selected.id, branchId, branchSales, branchPurch) : 0;
+  const todayTotal = sum(live(branchSales).filter((s) => new Date(s.created_at).getTime() >= today), "total");
 
-  const delSale = async (id: string) => { if (confirmDel("sale")) { await softDelete("sales", id); toast("Deleted"); shared.onSync(); } };
+  const addItem = () => {
+    if (!selected) return toast("No products");
+    if (!qty || qty < 1) return toast("Enter quantity");
+    setCart((c) => {
+      const found = c.find((x) => x.product_id === selected.id && x.price === price);
+      if (found) return c.map((x) => x === found ? { ...x, qty: x.qty + qty } : x);
+      return [...c, { product_id: selected.id, name: selected.name, qty, price }];
+    });
+    setQty(1);
+  };
+  const removeItem = (i: number) => setCart((c) => c.filter((_, k) => k !== i));
 
-  const save = async () => {
-    if (!selected) return toast("No products loaded");
-    if (!qty || qty < 1) return toast("Enter a valid quantity");
-    const row: Sale = {
-      id: crypto.randomUUID(), branch_id: branchId, created_by: shared.profile.id,
-      product_id: selected.id, product_name: selected.name, customer_name: cust.trim() || "Walk-in",
-      qty: Number(qty), price: Number(price), total: Number(qty) * Number(price),
-      created_at: new Date().toISOString(), _synced: 0,
-    };
-    await localdb.sales.add(row);
-    toast("Sale saved" + (shared.online ? "" : " offline"));
-    setQty(1); setCust("");
-    shared.onSync();
+  const save = async (print: boolean) => {
+    if (!cart.length) return toast("Add at least one item");
+    setSaving(true);
+    const { billNo } = await createSaleBill(branchId, shared.profile.id, cust, pay, cart);
+    setSaving(false);
+    if (print) printItemizedBill(billNo, cart.map((c) => ({ name: c.name, qty: c.qty, price: c.price })), cust.trim() || "Walk-in", pay, settings, branchName);
+    toast(`Bill ${billNo} saved` + (shared.online ? "" : " offline"));
+    setCart([]); setCust(""); setPay("cash"); shared.onSync();
   };
 
   return (
     <>
-      <h1 className="page-title" style={{ fontSize: 22 }}>New Sale</h1>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <h1 className="page-title" style={{ fontSize: 22 }}>New Bill</h1>
+        <span style={{ fontSize: 13, color: "var(--muted)" }}>Today: <b style={{ color: "var(--green)" }}>{money(todayTotal)}</b></span>
+      </div>
       <div className="card card-pad">
         <div className="form-grid">
           <div className="field"><label>Product</label>
@@ -112,30 +128,46 @@ function SaleForm({ branchId, shared }: { branchId: string; shared: SharedProps 
             </select>
             {selected && <div className="stock-hint">In stock: <b className={stock <= (selected.low_stock_at ?? 5) ? "low" : ""}>{stock} {selected.unit}</b></div>}
           </div>
-          <div className="field"><label>Customer (optional)</label><input value={cust} onChange={(e) => setCust(e.target.value)} placeholder="Walk-in" /></div>
           <div className="qty-row">
             <div className="field"><label>Quantity</label><input type="number" inputMode="numeric" min={1} value={qty} onChange={(e) => setQty(+e.target.value)} /></div>
             <div className="field"><label>Price each</label><input type="number" inputMode="numeric" value={price} onChange={(e) => setPrice(+e.target.value)} /></div>
           </div>
-          <div className="total-preview">{money((qty || 0) * (price || 0))}</div>
-          <button className="btn" onClick={save}>Save Sale</button>
+          <button className="btn ghost" onClick={addItem}>+ Add item to bill</button>
         </div>
       </div>
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-head"><h3>Today's sales here</h3></div>
+
+      <div className="card">
+        <div className="card-head"><h3>Bill items ({cart.length})</h3><b>{money(cartTotal)}</b></div>
         <div className="card-pad" style={{ paddingTop: 6 }}>
-          {todays.length ? <>
-            {todays.map((s) => (
-              <div className="row" key={s.id}>
-                <div><div className="main">{s.product_name} × {s.qty}</div>
-                  <div className="sub">{timeStr(s.created_at)} · {s._synced === 0 ? "⏳ waiting to sync" : "✓ synced"}{s.customer_name && s.customer_name !== "Walk-in" ? " · " + s.customer_name : ""}</div></div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className="amt in">{money(s.total)}</div><button className="del-btn" onClick={() => delSale(s.id)}>✕</button></div>
-              </div>
-            ))}
-            <div className="row"><div className="main"><b>Total</b></div><div className="amt in"><b>{money(sum(todays, "total"))}</b></div></div>
-          </> : <div className="empty">No sales yet today.</div>}
+          {cart.length ? cart.map((c, i) => (
+            <div className="row" key={i}><div><div className="main">{c.name} × {c.qty}</div><div className="sub">{money(c.price)} each</div></div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className="amt in">{money(c.qty * c.price)}</div><button className="del-btn" onClick={() => removeItem(i)}>✕</button></div></div>
+          )) : <div className="empty">No items yet. Add products above.</div>}
         </div>
       </div>
+
+      {cart.length > 0 && (
+        <div className="card card-pad">
+          <div className="form-grid">
+            <div className="field"><label>Customer (optional)</label>
+              <input list="cust-list" value={cust} onChange={(e) => setCust(e.target.value)} placeholder="Walk-in" />
+              <datalist id="cust-list">{customers.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+            </div>
+            <div className="field"><label>Payment</label>
+              <div className="pay-select">
+                {(["cash", "upi", "credit"] as const).map((m) => (
+                  <button key={m} className={"pay-opt" + (pay === m ? " active" : "")} onClick={() => setPay(m)}>{m === "credit" ? "Credit / Udhaar" : m.toUpperCase()}</button>
+                ))}
+              </div>
+            </div>
+            <div className="total-preview">{money(cartTotal)}</div>
+            <div className="btn-row">
+              <button className="btn ghost" onClick={() => save(false)} disabled={saving}>Save</button>
+              <button className="btn" onClick={() => save(true)} disabled={saving}>Save &amp; Print</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
@@ -282,6 +314,7 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
 function Customers({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const cust = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const [show, setShow] = useState(false);
+  const [ledger, setLedger] = useState<string | null>(null);
   const [name, setName] = useState(""); const [phone, setPhone] = useState("");
   const save = async () => {
     if (!name.trim()) return toast("Enter customer name");
@@ -296,11 +329,12 @@ function Customers({ branchId, shared }: { branchId: string; shared: SharedProps
         <div className="card-head"><h3>{cust.length} customer{cust.length === 1 ? "" : "s"}</h3><button className="add-btn" onClick={() => setShow(true)}>+ Add</button></div>
         <div className="card-pad" style={{ paddingTop: 6 }}>
           {cust.length ? cust.map((c) => (
-            <div className="row" key={c.id}><div><div className="main">{c.name}</div><div className="sub">{c.phone}{c._synced === 0 ? " · ⏳" : ""}</div></div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className={"amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) + " due" : "Clear"}</div><button className="del-btn" onClick={() => delCust(c.id)}>✕</button></div></div>
+            <div className="row" key={c.id}><div onClick={() => setLedger(c.name)} style={{ cursor: "pointer" }}><div className="main">{c.name}</div><div className="sub">{c.phone}{c._synced === 0 ? " · ⏳" : ""} · tap for ledger</div></div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}><div className={"amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) + " due" : "Clear"}</div><button className="pay-btn" onClick={() => setLedger(c.name)}>Ledger</button><button className="del-btn" onClick={() => delCust(c.id)}>✕</button></div></div>
           )) : <div className="empty">No customers yet.</div>}
         </div>
       </div>
+      {ledger && <LedgerModal branchId={branchId} name={ledger} onClose={() => setLedger(null)} />}
       {show && (
         <Modal title="Add customer" onClose={() => setShow(false)}>
           <div className="form-grid">
