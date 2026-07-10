@@ -14,12 +14,26 @@ import { EditCustomerModal, EditEntryModal } from "./Edits";
 import { downloadExcel } from "../lib/excel";
 import { printItemizedBill } from "../lib/invoice";
 import { supabase } from "../lib/supabase";
+import { BarChart, Donut } from "./Charts";
+import { AddCustomerModal, AddExpenseModal, AddPurchaseModal } from "./OwnerAdd";
 
 type View = "dashboard" | "branch" | "customers" | "purchases" | "inventory" | "saleshistory" | "daybook" | "reports" | "settings";
 type ORange = Range | "custom";
 const between = (rows: any[], from: number, to: number) => rows.filter((r) => { const t = new Date(r.created_at).getTime(); return t >= from && t <= to; });
 const inRange = (rows: any[], from: number) => rows.filter((r) => new Date(r.created_at).getTime() >= from);
 const confirmDelete = (what: string) => window.confirm(`Delete this ${what}? It moves to deleted items and can be restored.`);
+
+function last14Days(sales: any[]) {
+  const days: { label: string; value: number }[] = [];
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  for (let i = 13; i >= 0; i--) {
+    const start = now.getTime() - i * 86400000;
+    const end = start + 86400000;
+    const val = sales.filter((s) => { const t = new Date(s.created_at).getTime(); return t >= start && t < end; }).reduce((a, s) => a + s.total, 0);
+    days.push({ label: new Date(start).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }), value: val });
+  }
+  return days;
+}
 
 export function Owner(p: SharedProps) {
   const [range, setRange] = useState<ORange>("today");
@@ -116,11 +130,11 @@ export function Owner(p: SharedProps) {
         <div className="content">
           {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go }} />}
           {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync: p.onSync }} />}
-          {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} onSync={p.onSync} />}
-          {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} onSync={p.onSync} />}
+          {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} branches={branches} onSync={p.onSync} />}
+          {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} products={products} userId={p.profile.id} onSync={p.onSync} />}
           {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
           {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} settings={settings} branches={branches} staffMap={staffMap} />}
-          {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} onSync={p.onSync} />}
+          {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
           {view === "reports" && <ReportsPage rSales={rSales} range={rangeText} staffMap={staffMap} />}
           {view === "settings" && <SettingsPage prodAll={prodAll} online={p.online} settings={settings} onSync={p.onSync} branches={branches} />}
         </div>
@@ -139,6 +153,11 @@ function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bil
   const pPurch = pr ? purchases.filter((s: any) => { const t = new Date(s.created_at).getTime(); return t >= pr.from && t < pr.to; }) : [];
   const dS = pr ? pctDelta(sum(rSales, "total"), sum(pSales, "total")) : { cls: "flat", txt: "selected period" };
   const dP = pr ? pctDelta(sum(rPurch, "total"), sum(pPurch, "total")) : { cls: "flat", txt: "selected period" };
+  const paySplit = {
+    cash: sum(rSales.filter((s: any) => (s.payment_mode || "cash") === "cash"), "total"),
+    upi: sum(rSales.filter((s: any) => s.payment_mode === "upi"), "total"),
+    credit: sum(rSales.filter((s: any) => s.payment_mode === "credit"), "total"),
+  };
 
   // low stock across branches
   const low: { name: string; branch: string; qty: number }[] = [];
@@ -167,6 +186,21 @@ function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bil
           </div>
         </div>
       )}
+
+      <div className="grid-2">
+        <div className="card card-pad">
+          <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>Sales — last 14 days</h3>
+          <BarChart data={last14Days(sales)} color="var(--accent)" />
+        </div>
+        <div className="card card-pad">
+          <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>Payment split · {String(label).toLowerCase()}</h3>
+          <Donut rows={[
+            { label: "Cash", value: paySplit.cash, color: "#059669" },
+            { label: "UPI", value: paySplit.upi, color: "#4f46e5" },
+            { label: "Credit", value: paySplit.credit, color: "#d97706" },
+          ]} />
+        </div>
+      </div>
 
       <div className="grid-2">
         {branches.filter((b: any) => b.id !== "ho").map((b: any) => {
@@ -284,11 +318,12 @@ function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, 
 }
 
 /* ---------- customers ---------- */
-function CustomersPage({ custAll, bmap, onSync }: any) {
+function CustomersPage({ custAll, bmap, branches, onSync }: any) {
   const [showDeleted, setShowDeleted] = useState(false);
   const [q, setQ] = useState("");
   const [ledger, setLedger] = useState<{ branchId: string; name: string } | null>(null);
   const [editC, setEditC] = useState<any>(null);
+  const [addC, setAddC] = useState(false);
   let rows = showDeleted ? deletedOnly(custAll) : live(custAll);
   if (q.trim()) rows = rows.filter((c: any) => (c.name + (c.phone || "")).toLowerCase().includes(q.toLowerCase()));
   const exportCsv = () => downloadExcel("customers", ["Name", "Phone", "Branch", "Balance due"], rows.map((c: any) => [c.name, c.phone || "", bmap[c.branch_id] || "", c.balance_due]));
@@ -304,8 +339,9 @@ function CustomersPage({ custAll, bmap, onSync }: any) {
           <h3>{rows.length} {showDeleted ? "deleted" : "customer" + (rows.length === 1 ? "" : "s")}</h3>
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <input className="search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
-            <button className="edit-btn" onClick={exportCsv}>Export CSV</button>
-            <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted items"}</button>
+            <button className="edit-btn" onClick={exportCsv}>Export Excel</button>
+            <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
+            {!showDeleted && <button className="add-btn" onClick={() => setAddC(true)}>+ Add customer</button>}
           </div>
         </div>
         <div className="table-wrap"><table>
@@ -321,16 +357,18 @@ function CustomersPage({ custAll, bmap, onSync }: any) {
         </table></div>
       </div>
       {ledger && <LedgerModal branchId={ledger.branchId} name={ledger.name} onClose={() => setLedger(null)} onSync={onSync} />}
-      {editC && <EditCustomerModal customer={editC} onClose={() => setEditC(null)} onSync={onSync} />}</>
+      {editC && <EditCustomerModal customer={editC} onClose={() => setEditC(null)} onSync={onSync} />}
+      {addC && <AddCustomerModal branches={branches} onClose={() => setAddC(false)} onSync={onSync} />}</>
   );
 }
 
 /* ---------- purchases (professional) ---------- */
-function PurchasesPage({ rPurch, purchAll, bmap, label, branches, onSync }: any) {
+function PurchasesPage({ rPurch, purchAll, bmap, label, branches, products, userId, onSync }: any) {
   const [showDeleted, setShowDeleted] = useState(false);
   const [branchF, setBranchF] = useState("all");
   const [q, setQ] = useState("");
   const [editRow, setEditRow] = useState<any>(null);
+  const [addP, setAddP] = useState(false);
   const brs = branches.filter((b: any) => b.id !== "ho");
 
   let rows: any[] = showDeleted ? deletedOnly(purchAll) : rPurch;
@@ -379,6 +417,7 @@ function PurchasesPage({ rPurch, purchAll, bmap, label, branches, onSync }: any)
           <div style={{ display: "flex", gap: 8 }}>
             <button className="edit-btn" onClick={exportXls}>Export Excel</button>
             <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
+            {!showDeleted && <button className="add-btn" onClick={() => setAddP(true)}>+ Add purchase</button>}
           </div>
         </div>
         <div className="table-wrap"><table>
@@ -393,7 +432,8 @@ function PurchasesPage({ rPurch, purchAll, bmap, label, branches, onSync }: any)
           )) : <tr><td colSpan={9}><div className="empty">Nothing here.</div></td></tr>}</tbody>
         </table></div>
       </div>
-      {editRow && <EditEntryModal table="purchases" row={editRow} onClose={() => setEditRow(null)} onSync={onSync} />}</>
+      {editRow && <EditEntryModal table="purchases" row={editRow} onClose={() => setEditRow(null)} onSync={onSync} />}
+      {addP && <AddPurchaseModal branches={branches} products={products} userId={userId} onClose={() => setAddP(false)} onSync={onSync} />}</>
   );
 }
 
@@ -493,8 +533,9 @@ function SalesHistoryPage({ sales, bmap, settings, branches, staffMap }: any) {
 }
 
 /* ---------- day book ---------- */
-function DaybookPage({ rSales, rPurch, rExp, bmap, range, onSync }: any) {
+function DaybookPage({ rSales, rPurch, rExp, bmap, range, branches, userId, onSync }: any) {
   const [editRow, setEditRow] = useState<{ table: any; row: any } | null>(null);
+  const [addE, setAddE] = useState(false);
   const inT = sum(rSales, "total"), outP = sum(rPurch, "total"), outE = sum(rExp, "amount");
   const del = async (table: any, id: string, what: string) => { if (confirmDelete(what)) { await softDelete(table, id); toast("Deleted"); onSync(); } };
   const items = [
@@ -513,7 +554,8 @@ function DaybookPage({ rSales, rPurch, rExp, bmap, range, onSync }: any) {
         <div className="stat"><div className="label">Net</div><div className="value">{money(inT - outP - outE)}</div></div>
       </div>
       <div className="card">
-        <div className="card-head"><h3>All entries ({items.length})</h3><button className="edit-btn" onClick={exportCsv}>Export CSV</button></div>
+        <div className="card-head"><h3>All entries ({items.length})</h3>
+          <div style={{ display: "flex", gap: 8 }}><button className="edit-btn" onClick={exportCsv}>Export Excel</button><button className="add-btn" onClick={() => setAddE(true)}>+ Add expense</button></div></div>
         <div className="table-wrap"><table>
         <thead><tr><th>When</th><th>Branch</th><th>Detail</th><th className="r">Amount</th><th className="r"></th></tr></thead>
         <tbody>{items.slice(0, 200).map((i: any) => (
@@ -522,7 +564,8 @@ function DaybookPage({ rSales, rPurch, rExp, bmap, range, onSync }: any) {
             <td className="r" style={{ whiteSpace: "nowrap" }}><button className="edit-btn" onClick={() => setEditRow({ table: i.table, row: i.row })}>Edit</button> <button className="del-btn" onClick={() => del(i.table, i.id, i.what)}>✕</button></td></tr>
         ))}</tbody>
       </table></div></div>
-      {editRow && <EditEntryModal table={editRow.table} row={editRow.row} onClose={() => setEditRow(null)} onSync={onSync} />}</>
+      {editRow && <EditEntryModal table={editRow.table} row={editRow.row} onClose={() => setEditRow(null)} onSync={onSync} />}
+      {addE && <AddExpenseModal branches={branches} userId={userId} onClose={() => setAddE(false)} onSync={onSync} />}</>
   );
 }
 

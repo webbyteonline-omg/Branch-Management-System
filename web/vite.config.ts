@@ -19,7 +19,19 @@ export default defineConfig({
         orientation: "portrait",
         icons: [{ src: "icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
       },
-      workbox: { globPatterns: ["**/*.{js,css,html,svg,woff2}"] },
+      workbox: {
+        globPatterns: ["**/*.{js,css,html,svg,woff2}"],
+        clientsClaim: true,
+        skipWaiting: true,
+        cleanupOutdatedCaches: true,
+        // Always fetch the latest HTML so new deploys show immediately.
+        navigateFallback: "index.html",
+        runtimeCaching: [{
+          urlPattern: ({ request }) => request.mode === "navigate",
+          handler: "NetworkFirst",
+          options: { cacheName: "html-cache" },
+        }],
+      },
     }),
   ],
 });
