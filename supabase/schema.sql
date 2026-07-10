@@ -1,0 +1,225 @@
+-- ============================================================
+--  Branch Manager — Supabase schema + Row-Level Security
+--  Run this in Supabase → SQL Editor (once, on a fresh project).
+--  Security is enforced IN THE DATABASE: a staff member's phone
+--  physically cannot read or write another branch's rows.
+-- ============================================================
+
+create extension if not exists "pgcrypto";
+
+-- ---------- enums ----------
+do $$ begin
+  create type user_role as enum ('owner', 'staff');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type bill_status as enum ('unpaid', 'paid');
+exception when duplicate_object then null; end $$;
+
+-- ---------- core tables ----------
+create table if not exists public.branches (
+  id           text primary key,                 -- 'seppa', 'dirang', 'ho'
+  name         text not null,
+  location     text,
+  active_staff int default 0,
+  created_at   timestamptz not null default now()
+);
+
+-- profiles extend Supabase auth.users with role + branch
+create table if not exists public.profiles (
+  id         uuid primary key references auth.users(id) on delete cascade,
+  name       text not null,
+  phone      text,
+  role       user_role not null default 'staff',
+  branch_id  text references public.branches(id),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.products (
+  id           uuid primary key default gen_random_uuid(),
+  name         text not null,
+  unit         text not null default 'pcs',
+  sale_price   numeric(12,2) not null default 0,
+  cost_price   numeric(12,2) not null default 0,
+  low_stock_at numeric(12,2) not null default 5,   -- alert threshold
+  active       boolean not null default true,
+  created_at   timestamptz not null default now(),
+  deleted_at   timestamptz                         -- soft delete
+);
+
+-- Transactional tables use a CLIENT-GENERATED uuid as primary key.
+-- The phone creates the id offline; sync does an upsert -> the same
+-- entry can never be inserted twice (idempotent, zero duplicates).
+create table if not exists public.sales (
+  id            uuid primary key,
+  branch_id     text not null references public.branches(id),
+  created_by    uuid references public.profiles(id),
+  product_id    uuid references public.products(id),
+  product_name  text not null,
+  customer_name text default 'Walk-in',
+  qty           numeric(12,2) not null,
+  price         numeric(12,2) not null,
+  total         numeric(12,2) not null,
+  created_at    timestamptz not null default now(),
+  deleted_at    timestamptz
+);
+
+create table if not exists public.purchases (
+  id            uuid primary key,
+  branch_id     text not null references public.branches(id),
+  created_by    uuid references public.profiles(id),
+  product_id    uuid references public.products(id),
+  product_name  text not null,
+  supplier      text,
+  qty           numeric(12,2) not null,
+  cost          numeric(12,2) not null,
+  total         numeric(12,2) not null,
+  created_at    timestamptz not null default now(),
+  deleted_at    timestamptz
+);
+
+create table if not exists public.customers (
+  id          uuid primary key default gen_random_uuid(),
+  branch_id   text not null references public.branches(id),
+  name        text not null,
+  phone       text,
+  balance_due numeric(12,2) not null default 0,
+  created_at  timestamptz not null default now(),
+  deleted_at  timestamptz
+);
+
+create table if not exists public.bills (
+  id            uuid primary key,
+  branch_id     text not null references public.branches(id),
+  customer_name text not null,
+  amount        numeric(12,2) not null,
+  paid          numeric(12,2) not null default 0,
+  due_amount    numeric(12,2) not null default 0,
+  status        bill_status not null default 'unpaid',
+  created_at    timestamptz not null default now(),
+  deleted_at    timestamptz
+);
+
+-- shop expenses (rent, transport, salary, etc.) — feeds the day book
+create table if not exists public.expenses (
+  id         uuid primary key,
+  branch_id  text not null references public.branches(id),
+  created_by uuid references public.profiles(id),
+  category   text not null default 'General',
+  note       text,
+  amount     numeric(12,2) not null,
+  created_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+
+-- single-row company profile used on printed invoices
+create table if not exists public.app_settings (
+  id         text primary key default 'main',
+  company    text default 'My Shop',
+  address    text,
+  phone      text,
+  gstin      text,
+  footer     text default 'Thank you for your business!'
+);
+insert into public.app_settings (id) values ('main') on conflict (id) do nothing;
+
+create index if not exists idx_expenses_branch_time  on public.expenses(branch_id, created_at desc);
+create index if not exists idx_sales_branch_time     on public.sales(branch_id, created_at desc);
+create index if not exists idx_purchases_branch_time on public.purchases(branch_id, created_at desc);
+create index if not exists idx_bills_branch          on public.bills(branch_id);
+create index if not exists idx_customers_branch      on public.customers(branch_id);
+
+-- ---------- helper functions (SECURITY DEFINER avoids RLS recursion) ----------
+create or replace function public.app_role()
+  returns user_role language sql stable security definer set search_path = public as
+$$ select role from public.profiles where id = auth.uid() $$;
+
+create or replace function public.app_branch()
+  returns text language sql stable security definer set search_path = public as
+$$ select branch_id from public.profiles where id = auth.uid() $$;
+
+create or replace function public.is_owner()
+  returns boolean language sql stable security definer set search_path = public as
+$$ select coalesce(public.app_role() = 'owner', false) $$;
+
+-- ---------- enable RLS ----------
+alter table public.branches  enable row level security;
+alter table public.profiles  enable row level security;
+alter table public.products  enable row level security;
+alter table public.sales     enable row level security;
+alter table public.purchases enable row level security;
+alter table public.customers enable row level security;
+alter table public.bills     enable row level security;
+alter table public.expenses  enable row level security;
+alter table public.app_settings enable row level security;
+
+-- reference data: any signed-in user can read; only owner can change
+drop policy if exists branches_read on public.branches;
+create policy branches_read on public.branches for select to authenticated using (true);
+drop policy if exists branches_write on public.branches;
+create policy branches_write on public.branches for all to authenticated using (public.is_owner()) with check (public.is_owner());
+
+drop policy if exists products_read on public.products;
+create policy products_read on public.products for select to authenticated using (true);
+drop policy if exists products_write on public.products;
+create policy products_write on public.products for all to authenticated using (public.is_owner()) with check (public.is_owner());
+
+-- profiles: owner sees all; a user always sees own row
+drop policy if exists profiles_read on public.profiles;
+create policy profiles_read on public.profiles for select to authenticated
+  using (public.is_owner() or id = auth.uid());
+drop policy if exists profiles_write on public.profiles;
+create policy profiles_write on public.profiles for all to authenticated
+  using (public.is_owner()) with check (public.is_owner());
+
+-- branch-scoped tables: owner = all branches, staff = own branch only
+do $$
+declare t text;
+begin
+  foreach t in array array['sales','purchases','customers','bills','expenses'] loop
+    execute format('drop policy if exists %I_read on public.%I', t, t);
+    execute format($f$create policy %I_read on public.%I for select to authenticated
+      using (public.is_owner() or branch_id = public.app_branch())$f$, t, t);
+
+    execute format('drop policy if exists %I_write on public.%I', t, t);
+    execute format($f$create policy %I_write on public.%I for all to authenticated
+      using (public.is_owner() or branch_id = public.app_branch())
+      with check (public.is_owner() or branch_id = public.app_branch())$f$, t, t);
+  end loop;
+end $$;
+
+-- app_settings: readable by all signed-in users, writable by owner only
+drop policy if exists settings_read on public.app_settings;
+create policy settings_read on public.app_settings for select to authenticated using (true);
+drop policy if exists settings_write on public.app_settings;
+create policy settings_write on public.app_settings for all to authenticated using (public.is_owner()) with check (public.is_owner());
+
+-- ---------- realtime (owner dashboard updates live) ----------
+do $$ begin
+  alter publication supabase_realtime add table public.sales;
+  alter publication supabase_realtime add table public.purchases;
+  alter publication supabase_realtime add table public.bills;
+  alter publication supabase_realtime add table public.expenses;
+exception when duplicate_object then null; end $$;
+
+-- ---------- auto-create a profile when a new auth user is added ----------
+-- Owner creates staff in Supabase Auth with user_metadata {name, role, branch_id}.
+create or replace function public.handle_new_user()
+  returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.profiles (id, name, phone, role, branch_id)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'name', new.email),
+    new.raw_user_meta_data->>'phone',
+    coalesce((new.raw_user_meta_data->>'role')::user_role, 'staff'),
+    new.raw_user_meta_data->>'branch_id'
+  )
+  on conflict (id) do nothing;
+  return new;
+end $$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
