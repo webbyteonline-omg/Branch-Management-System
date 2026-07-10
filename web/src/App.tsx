@@ -75,6 +75,16 @@ export function App() {
   if (!session || !profile)
     return (<><Login /><ToastHost /></>);
 
+  // Safety: a staff account with no branch assigned would otherwise crash.
+  if (profile.role !== "owner" && !profile.branch_id) {
+    return (
+      <div className="empty" style={{ marginTop: 90, padding: 24 }}>
+        Your account has no branch assigned.<br />Please ask the owner to set your branch, then sign in again.
+        <div style={{ marginTop: 18 }}><button className="btn" style={{ maxWidth: 200, margin: "0 auto" }} onClick={logout}>Sign out</button></div>
+      </div>
+    );
+  }
+
   const shared = { profile, online, onToggleOnline: toggleOnline, onLogout: logout, onSync: sync };
   return (
     <ErrorBoundary>
