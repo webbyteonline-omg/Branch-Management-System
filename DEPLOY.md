@@ -47,11 +47,13 @@ These power **Add staff** and **Reset staff password** inside the app (so the ow
 npm i -g supabase          # one-time
 supabase login
 supabase link --project-ref YOUR-PROJECT-REF
-supabase functions deploy admin-create-staff
-supabase functions deploy admin-reset-password
+supabase functions deploy admin-create-staff --no-verify-jwt
+supabase functions deploy admin-reset-password --no-verify-jwt
 ```
 
-The function files are in `supabase/functions/`. They run on Supabase's servers with the service-role key (which Supabase injects automatically — you never paste it anywhere), and each verifies the caller is the owner before doing anything.
+**`--no-verify-jwt` is required** — without it Supabase's gateway rejects the browser's CORS preflight (OPTIONS) request and you get a "blocked by CORS policy" error in the app. The functions still do their own auth (they verify the caller is the owner via their token), so security is unchanged.
+
+The function files are in `supabase/functions/`. They run on Supabase's servers with the service-role key (which Supabase injects automatically — you never paste it anywhere). No Docker needed for deploy.
 
 > If you skip these, you can still add staff / reset passwords manually from the Supabase dashboard (Authentication → Users), but the in-app buttons won't work.
 
