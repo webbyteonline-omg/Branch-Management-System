@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { localdb, pendingCount } from "../lib/db";
 import { Icon } from "../lib/icons";
@@ -49,11 +49,18 @@ export function Staff(p: SharedProps) {
         </div>
         <div className="who" style={{ textAlign: "center" }}><b>{p.profile.name}</b><span>{branchName}</span></div>
         <div className="actions">
-          <span className={"sync-pill " + (pending > 0 ? "pending" : "ok")}><span className="dot" />{pending > 0 ? pending : "Synced"}</span>
+          <span className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} title={p.syncError || undefined}>
+            <span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? pending : "Synced"}
+          </span>
           <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
           <button className="hbtn" style={{ width: 34, height: 34 }} onClick={() => setShowAccount(true)}><Icon name="settings" size={16} /></button>
         </div>
       </div>
+      {p.syncError && (
+        <div style={{ background: "var(--red-soft)", color: "var(--red)", fontSize: 12.5, padding: "8px 16px", textAlign: "center", fontWeight: 600 }}>
+          ⚠ Some entries aren't reaching Head Office yet. They're saved safely on this device — {p.syncError}
+        </div>
+      )}
       <div className="m-content">
         {tab === "dashboard" && <StaffDashboard branchId={branchId} branchName={branchName} shared={p} go={go} />}
         {tab === "sale" && <BillingForm branchId={branchId} shared={p} branchName={branchName} />}
@@ -72,8 +79,8 @@ export function Staff(p: SharedProps) {
         ))}
       </div>
       {showMenu && (
-        <div className="modal-scrim" onClick={() => setShowMenu(false)}>
-          <div className="modal" style={{ maxWidth: 320, alignSelf: "flex-start", marginTop: 0, borderRadius: "0 14px 14px 0", height: "100vh" }} onClick={(e) => e.stopPropagation()}>
+        <div className="drawer-scrim" onClick={() => setShowMenu(false)}>
+          <div className="drawer" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head"><h3>Menu</h3><button className="hbtn" style={{ width: 30, height: 30 }} onClick={() => setShowMenu(false)}>✕</button></div>
             <div className="modal-body" style={{ padding: 10 }}>
               {menuItems.map(([t, label, ic]) => (
@@ -324,9 +331,12 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
   const [pq, setPq] = useState("");
   const [showPd, setShowPd] = useState(false);
   const [pid, setPid] = useState("");
+  const [pActive, setPActive] = useState(0); // keyboard-highlighted row in the dropdown
   const selected = products.find((x) => x.id === pid);
   const stock = selected ? computeStock(selected.id, branchId, branchSales, branchPurch) : 0;
   const perBox = selected?.pieces_per_box || 0;
+  const productInputRef = useRef<HTMLInputElement>(null);
+  const qtyInputRef = useRef<HTMLInputElement>(null);
 
   const [box, setBox] = useState(0);
   const [pcs, setPcs] = useState(1);
@@ -356,8 +366,17 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
 
   const pMatches = products.filter((pr) => pr.name.toLowerCase().includes(pq.toLowerCase())).slice(0, 30);
   const selectProduct = (pr: typeof products[number]) => {
-    setPid(pr.id); setPq(pr.name); setShowPd(false);
+    setPid(pr.id); setPq(pr.name); setShowPd(false); setPActive(0);
     setPrice(pr.sale_price); setBox(0); setPcs(1);
+    // Jump straight to quantity so the next keystroke is "how many", not a
+    // separate click — this is the whole point of the search-then-add flow.
+    setTimeout(() => qtyInputRef.current?.focus(), 0);
+  };
+  const onProductKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!showPd || pMatches.length === 0) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setPActive((i) => Math.min(i + 1, pMatches.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setPActive((i) => Math.max(i - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); selectProduct(pMatches[pActive] ?? pMatches[0]); }
   };
 
   const { lineTotal } = computeLineTotal(totalQty, price, discountType, discountValue);
@@ -371,6 +390,14 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
     if (!totalQty || totalQty <= 0) return toast("Enter a quantity (box and/or pcs)");
     setCart((c) => [...c, { product_id: selected.id, name: selected.name, qty: totalQty, price, discountType, discountValue }]);
     setPid(""); setPq(""); setBox(0); setPcs(1); setDiscType("none"); setDiscCustom(0); setDiscFlat(0);
+    // Back to product search immediately — ready for the next item with no
+    // extra click, matching how a cashier actually rings up multiple items.
+    setTimeout(() => productInputRef.current?.focus(), 0);
+  };
+  // Enter in either quantity field adds the item straight away (skips the
+  // separate "+ Add item" click for the common no-discount-editing case).
+  const onQtyKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") { e.preventDefault(); addItem(); }
   };
   const removeItem = (i: number) => setCart((c) => c.filter((_, k) => k !== i));
 
@@ -437,29 +464,31 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
         <div className="form-grid">
           <div className="field" style={{ position: "relative" }}>
             <label>Product</label>
-            <input className="search" style={{ width: "100%" }} value={pq}
-              onChange={(e) => { setPq(e.target.value); setShowPd(true); setPid(""); }}
+            <input ref={productInputRef} className="search" style={{ width: "100%" }} value={pq}
+              onChange={(e) => { setPq(e.target.value); setShowPd(true); setPid(""); setPActive(0); }}
               onFocus={() => setShowPd(true)} onBlur={() => setTimeout(() => setShowPd(false), 150)}
-              placeholder="Search products…" />
+              onKeyDown={onProductKeyDown}
+              placeholder="Search or type a product, then press Enter…" />
             {showPd && pMatches.length > 0 && (
               <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 260, overflowY: "auto", marginTop: 4 }}>
-                {pMatches.map((pr) => (
-                  <div key={pr.id} className="row" style={{ padding: "10px 14px", cursor: "pointer" }} onMouseDown={() => selectProduct(pr)}>
+                {pMatches.map((pr, i) => (
+                  <div key={pr.id} className="row" style={{ padding: "10px 14px", cursor: "pointer", background: i === pActive ? "var(--surface-2)" : undefined }}
+                    onMouseEnter={() => setPActive(i)} onMouseDown={() => selectProduct(pr)}>
                     <div><div className="main">{pr.name}</div><div className="sub">{money(pr.sale_price)}/{pr.unit}{pr.pieces_per_box ? ` · 1 box = ${pr.pieces_per_box} pcs` : ""}</div></div>
                   </div>
                 ))}
               </div>
             )}
-            {selected && <div className="stock-hint">In stock: <b className={stock <= (selected.low_stock_at ?? 5) ? "low" : ""}>{stock} {selected.unit}</b></div>}
+            {selected && <div className="stock-hint">In stock: <b className={stock <= (selected.low_stock_at ?? 5) ? "low" : ""}>{stock} {selected.unit}</b> · Enter quantity below, press Enter to add</div>}
           </div>
 
           {selected && (
             <>
               <div className="qty-row" style={{ gridTemplateColumns: perBox ? "1fr 1fr" : "1fr" }}>
                 {perBox > 0 && (
-                  <div className="field"><label>Box (1 box = {perBox} pcs)</label><input type="number" inputMode="numeric" min={0} value={box} onChange={(e) => setBox(+e.target.value)} /></div>
+                  <div className="field"><label>Box (1 box = {perBox} pcs)</label><input type="number" inputMode="numeric" min={0} value={box} onChange={(e) => setBox(+e.target.value)} onKeyDown={onQtyKeyDown} /></div>
                 )}
-                <div className="field"><label>Pcs</label><input type="number" inputMode="numeric" min={0} value={pcs} onChange={(e) => setPcs(+e.target.value)} /></div>
+                <div className="field"><label>Pcs</label><input ref={qtyInputRef} type="number" inputMode="numeric" min={0} value={pcs} onChange={(e) => setPcs(+e.target.value)} onFocus={(e) => e.target.select()} onKeyDown={onQtyKeyDown} /></div>
               </div>
               <div className="qty-row">
                 <div className="field"><label>Price each</label><input type="number" inputMode="numeric" value={price} onChange={(e) => setPrice(+e.target.value)} /></div>

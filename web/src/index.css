@@ -226,6 +226,16 @@ tbody tr:hover { background: var(--surface-2); }
 .edit-btn { padding: 6px 12px; border-radius: 8px; background: var(--surface-2); color: #475569; font-weight: 600; font-size: 13px; border: 1px solid var(--line); }
 @media (min-width: 560px) { .modal-scrim { align-items: center; } .modal { border-radius: 18px; } }
 
+/* slide-in drawer (staff hamburger menu) — separate from .modal so it never
+   fights the bottom-sheet layout; always clamped to the viewport width. */
+.drawer-scrim { position: fixed; inset: 0; background: rgba(15,23,42,.45); z-index: 70;
+  display: block; }
+.drawer { position: fixed; top: 0; left: 0; bottom: 0; width: min(82vw, 300px); max-width: 100vw;
+  background: var(--surface); box-shadow: var(--shadow-lg); z-index: 71;
+  display: flex; flex-direction: column; overflow-y: auto;
+  animation: slideIn .18s ease; }
+@keyframes slideIn { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+
 @media (max-width: 900px) {
   .sidebar { transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow-lg); }
   .sidebar.open { transform: translateX(0); }

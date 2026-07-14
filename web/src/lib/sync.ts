@@ -49,57 +49,50 @@ export async function pullAll(profile: Profile): Promise<void> {
   ]);
 }
 
-/** Upload everything still marked unsynced. Idempotent: the client-generated
- *  uuid is the primary key, so an upsert can safely retry with no duplicates. */
-export async function pushPending(): Promise<number> {
-  let pushed = 0;
-
-  const sales = await localdb.sales.where("_synced").equals(0).toArray();
-  if (sales.length) {
-    const { error } = await supabase.from("sales").upsert(sales.map(clean));
-    if (!error) {
-      await localdb.sales.bulkPut(sales.map((s) => ({ ...s, _synced: 1 })));
-      pushed += sales.length;
-    }
+export class SyncError extends Error {
+  table: string; cause: any;
+  constructor(table: string, cause: any) {
+    super(`Failed to sync ${table}: ${cause?.message || cause}`);
+    this.table = table; this.cause = cause;
   }
-
-  const purchases = await localdb.purchases.where("_synced").equals(0).toArray();
-  if (purchases.length) {
-    const { error } = await supabase.from("purchases").upsert(purchases.map(clean));
-    if (!error) {
-      await localdb.purchases.bulkPut(purchases.map((p) => ({ ...p, _synced: 1 })));
-      pushed += purchases.length;
-    }
-  }
-
-  const customers = await localdb.customers.where("_synced").equals(0).toArray();
-  if (customers.length) {
-    const { error } = await supabase.from("customers").upsert(customers.map(clean));
-    if (!error) {
-      await localdb.customers.bulkPut(customers.map((c) => ({ ...c, _synced: 1 })));
-      pushed += customers.length;
-    }
-  }
-
-  const bills = await localdb.bills.where("_synced").equals(0).toArray();
-  if (bills.length) {
-    const { error } = await supabase.from("bills").upsert(bills.map(clean));
-    if (!error) {
-      await localdb.bills.bulkPut(bills.map((b) => ({ ...b, _synced: 1 })));
-      pushed += bills.length;
-    }
-  }
-
-  const expenses = await localdb.expenses.where("_synced").equals(0).toArray();
-  if (expenses.length) {
-    const { error } = await supabase.from("expenses").upsert(expenses.map(clean));
-    if (!error) {
-      await localdb.expenses.bulkPut(expenses.map((e) => ({ ...e, _synced: 1 })));
-      pushed += expenses.length;
-    }
-  }
-  return pushed;
 }
+
+/** Upload everything still marked unsynced. Idempotent: the client-generated
+ *  uuid is the primary key, so an upsert can safely retry with no duplicates.
+ *  IMPORTANT: errors are NOT swallowed — a row that fails to push (e.g. a
+ *  schema mismatch between the app and the deployed database) stays
+ *  _synced:0 forever and previously failed completely silently, with no way
+ *  to tell it apart from "just hasn't synced yet". Now every failure is
+ *  collected and thrown so the caller can surface it (toast/console) instead
+ *  of the data quietly never arriving. */
+export async function pushPending(): Promise<{ pushed: number; errors: SyncError[] }> {
+  let pushed = 0;
+  const errors: SyncError[] = [];
+
+  const tables: { name: SyncTableName; table: any }[] = [
+    { name: "sales", table: localdb.sales },
+    { name: "purchases", table: localdb.purchases },
+    { name: "customers", table: localdb.customers },
+    { name: "bills", table: localdb.bills },
+    { name: "expenses", table: localdb.expenses },
+  ];
+
+  for (const { name, table } of tables) {
+    const rows = await table.where("_synced").equals(0).toArray();
+    if (!rows.length) continue;
+    const { error } = await supabase.from(name).upsert(rows.map(clean));
+    if (error) {
+      console.error(`[sync] push failed for ${name}:`, error);
+      errors.push(new SyncError(name, error));
+    } else {
+      await table.bulkPut(rows.map((r: any) => ({ ...r, _synced: 1 })));
+      pushed += rows.length;
+    }
+  }
+
+  return { pushed, errors };
+}
+type SyncTableName = "sales" | "purchases" | "customers" | "bills" | "expenses";
 
 /** Live updates so the owner's dashboard reflects branch activity instantly.
  *  Every insert/update/delete from any device is written into the local store,

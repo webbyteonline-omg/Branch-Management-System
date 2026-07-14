@@ -6,6 +6,7 @@ export interface SharedProps {
   onToggleOnline: () => void;
   onLogout: () => void;
   onSync: () => void;
+  syncError?: string | null;
 }
 
 export const sum = <T,>(rows: T[], k: keyof T) =>

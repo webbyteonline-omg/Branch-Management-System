@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 import { pullAll, pushPending, subscribeRealtime } from "./lib/sync";
@@ -14,6 +14,7 @@ export function App() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [manualOffline, setManualOffline] = useState(false);
   const [navOnline, setNavOnline] = useState(navigator.onLine);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const online = navOnline && !manualOffline;
 
   // ---- auth session ----
@@ -43,13 +44,32 @@ export function App() {
   }, []);
 
   // ---- sync: push pending, then pull fresh ----
+  // Tracks the last-seen error signature so a persistent failure (e.g. the
+  // app was updated but the database schema wasn't) surfaces once clearly
+  // instead of either spamming a toast every 20s or — the old bug — staying
+  // completely silent while data never reaches Head Office.
+  const lastSyncErrorRef = useRef<string | null>(null);
   const sync = useCallback(async () => {
     if (!profile || !navigator.onLine || manualOffline) return;
     try {
-      const n = await pushPending();
+      const { pushed, errors } = await pushPending();
+      if (errors.length > 0) {
+        const msg = `${errors[0].table}: ${errors[0].cause?.message || "sync failed"}`;
+        setSyncError(msg);
+        const sig = errors.map((e) => e.table + ":" + e.message).join("|");
+        if (sig !== lastSyncErrorRef.current) {
+          lastSyncErrorRef.current = sig;
+          toast(`Sync problem: ${errors[0].table} didn't save to Head Office (${errors[0].cause?.message || "unknown error"}). Entry stays saved on this device.`);
+        }
+      } else {
+        setSyncError(null);
+        lastSyncErrorRef.current = null;
+      }
       await pullAll(profile);
-      if (n > 0) toast(`${n} entr${n === 1 ? "y" : "ies"} synced to Head Office`);
-    } catch { /* stays queued, retries next time */ }
+      if (pushed > 0) toast(`${pushed} entr${pushed === 1 ? "y" : "ies"} synced to Head Office`);
+    } catch (e) {
+      console.error("[sync] unexpected failure:", e);
+    }
   }, [profile, manualOffline]);
 
   useEffect(() => { if (profile) sync(); }, [profile, sync]);
@@ -103,7 +123,7 @@ export function App() {
     );
   }
 
-  const shared = { profile, online, onToggleOnline: toggleOnline, onLogout: logout, onSync: sync };
+  const shared = { profile, online, onToggleOnline: toggleOnline, onLogout: logout, onSync: sync, syncError };
   return (
     <ErrorBoundary>
       {profile.role === "owner" ? <Owner {...shared} /> : <Staff {...shared} />}
