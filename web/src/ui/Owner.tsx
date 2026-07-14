@@ -101,25 +101,49 @@ export function Owner(p: SharedProps) {
 
   return (
     <div className="shell">
-      <aside className={"sidebar" + (open ? " open" : "")}>
-        <div className="brand"><img src="/icon.svg" alt="" /><div><b>{settings?.company || "BranchManager"}</b><span>Head Office Admin</span></div></div>
-        {navItems.map(([key, label, ic], i) => (
-          <div key={key}>
-            {i === 1 && <div className="nav-sep" />}
-            <button className={"nav-item" + (activeKey === key ? " active" : "")}
+      <aside className={"sidebar pt-sidebar" + (open ? " open" : "")}>
+        <div className="brand-pt"><b>{settings?.company || "ProTrade POS"}</b><span>Admin Dashboard</span></div>
+        <nav className="pt-nav">
+          {navItems.map(([key, label, ic], i) => (
+            <button key={key} className={"pt-nav-item" + (activeKey === key ? " active" : "")}
               onClick={() => key.startsWith("branch:") ? go("branch", key.split(":")[1]) : go(key as View)}>
-              <Icon name={ic} /><span>{label}</span>
+              <Icon name={ic} size={19} /><span>{label}</span>
             </button>
-          </div>
-        ))}
-        <div className="foot">Live · Supabase</div>
+          ))}
+        </nav>
+        <div className="pt-nav-foot">
+          <div className="avatar" style={{ width: 34, height: 34, fontSize: 12 }}>{initials(p.profile.name)}</div>
+          <div><b>{p.profile.name}</b><span>{p.profile.role === "owner" ? "Owner" : "Staff"}</span></div>
+        </div>
       </aside>
       {open && <div className="scrim" onClick={() => setOpen(false)} />}
 
-      <div className="main">
-        <div className="header">
-          <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-            <button className="hbtn hide-desktop" onClick={() => setOpen(true)}><Icon name="menu" /></button>
+      <div className="main pt-main">
+        <div className="header pt-header">
+          <div className="pt-header-search hide-mobile">
+            <Icon name="search" size={17} />
+            <input placeholder="Search orders, stock, or customers…" />
+          </div>
+          <button className="hbtn hide-desktop" onClick={() => setOpen(true)}><Icon name="menu" /></button>
+          <div className="header-right">
+            <button className="hbtn" onClick={p.onSync} title="Sync"><Icon name="sync" size={18} /></button>
+            <button className="hbtn" onClick={p.onSync} title="Refresh now"><Icon name="refresh" size={18} /></button>
+            <span className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} title={p.syncError || undefined}><span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? `${pending} to sync` : "All synced"}</span>
+            <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
+            <button className="btn" style={{ width: "auto", padding: "9px 18px", borderRadius: 999 }} onClick={p.onLogout}>Logout</button>
+          </div>
+        </div>
+
+        <div className="content pt-content">
+          <div className="pt-content-head">
+            <div>
+              <h2 className="pt-page-title">{
+                { dashboard: "Global Overview", branch: "Branch Detail", customers: "Customers", ledger: "Ledger",
+                  purchases: "Purchase Register", inventory: "Stock & Inventory", products: "Products",
+                  saleshistory: "Sales History", daybook: "Day Book", reports: "Reports", settings: "Settings" }[view]
+              }</h2>
+              <p className="pt-page-sub">{view === "dashboard" ? "Aggregated data from all operational branches" : rangeText}</p>
+            </div>
             <div className="seg">
               {(["today", "week", "month"] as Range[]).map((r) => (
                 <button key={r} className={range === r ? "active" : ""} onClick={() => setRange(r)}>{rangeLabel(r)}</button>
@@ -134,16 +158,6 @@ export function Owner(p: SharedProps) {
               </div>
             )}
           </div>
-          <div className="header-right">
-            <span className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} title={p.syncError || undefined}><span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? `${pending} to sync` : "All synced"}</span>
-            <button className="hbtn" onClick={p.onSync} title="Refresh now"><Icon name="refresh" size={18} /></button>
-            <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
-            <button className="hbtn" onClick={p.onLogout} title="Sign out"><Icon name="logout" size={18} /></button>
-            <div className="avatar" title={p.profile.name}>{initials(p.profile.name)}</div>
-          </div>
-        </div>
-
-        <div className="content">
           {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go, isMobile }} />}
           {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync: p.onSync, isMobile }} />}
           {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} branches={branches} onSync={p.onSync} />}
@@ -233,11 +247,12 @@ function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bil
     <>
       <h1 className="page-title">Head Office Overview</h1>
       <p className="page-sub">Aggregated data across both branches for {String(label).toLowerCase()}.</p>
-      <div className="stats">
-        <Stat label="Total Sales" value={money(sum(rSales, "total"))} delta={dS} icon="sales" />
-        <Stat label="Unpaid Bills" value={String(openBills.length)} delta={{ cls: "down", txt: money(totalDue) + " due" }} icon="bill" />
-        <Stat label="Purchases + Expenses" value={money(sum(rPurch, "total") + sum(rExp, "amount"))} delta={dP} icon="cart" />
-        <Stat label="Active Customers" value={String(custNames.size)} delta={{ cls: "up", txt: "with orders this period" }} icon="customers" />
+
+      <div className="kpi-grid">
+        <Kpi label="Total Sales" value={money(sum(rSales, "total"))} delta={dS} icon="sales" color="var(--accent)" bg="var(--accent-soft)" />
+        <Kpi label="Unpaid Bills" value={money(totalDue)} delta={{ cls: "down", txt: openBills.length + " open" }} icon="bill" color="var(--red)" bg="var(--red-soft)" />
+        <Kpi label="Purchases + Expenses" value={money(sum(rPurch, "total") + sum(rExp, "amount"))} delta={dP} icon="cart" color="var(--amber)" bg="var(--amber-soft, #fff3d9)" />
+        <Kpi label="Active Customers" value={String(custNames.size)} delta={{ cls: "up", txt: "this period" }} icon="customers" color="var(--green)" bg="var(--green-soft)" />
       </div>
 
       <div className="grid-2">
@@ -255,25 +270,30 @@ function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bil
         </div>
       </div>
 
+      <h4 style={{ margin: "22px 0 12px", fontSize: 16, fontWeight: 700 }}>Branch Performance</h4>
       <div className="grid-2">
         {branches.filter((b: any) => b.id !== "ho").map((b: any) => {
           const bs = rSales.filter((s: any) => s.branch_id === b.id);
           const tops = topItems(bs);
           return (
-            <div className="card" key={b.id}>
-              <div className="card-head">
-                <h3><span className="status-dot" />{b.name}</h3>
-                <button className="link" onClick={() => go("branch", b.id)}>View details →</button>
-              </div>
-              <div className="branch-metrics">
-                <div className="metric"><div className="m-label">Sales · {label}</div><div className="m-value green">{money(sum(bs, "total"))}</div></div>
-                <div className="metric"><div className="m-label">Active staff</div><div className="m-value">{b.active_staff}</div></div>
-              </div>
-              <div className="topitems">
-                <div className="t-label">Top selling items</div>
-                <div className="chips">
-                  {tops.length ? tops.map((t, i) => <span className="chip" key={t}><span className="rank">{i + 1}</span>{t}</span>) : <span className="chip">No sales yet</span>}
+            <div className="branch-card" key={b.id}>
+              <div className="thumb"><Icon name="branch" size={30} /></div>
+              <div className="bc-body">
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <h3 style={{ margin: 0, fontSize: 16 }}>{b.name}</h3>
+                  <span className="online-pill">Online</span>
                 </div>
+                <div className="branch-metrics">
+                  <div className="metric"><div className="m-label">Sales · {label}</div><div className="m-value green">{money(sum(bs, "total"))}</div></div>
+                  <div className="metric"><div className="m-label">Active staff</div><div className="m-value">{b.active_staff}</div></div>
+                </div>
+                <div className="topitems">
+                  <div className="t-label">Top selling items</div>
+                  <div className="chips">
+                    {tops.length ? tops.map((t, i) => <span className="chip" key={t}><span className="rank">{i + 1}</span>{t}</span>) : <span className="chip">No sales yet</span>}
+                  </div>
+                </div>
+                <button className="link" style={{ marginTop: 10 }} onClick={() => go("branch", b.id)}>View details →</button>
               </div>
             </div>
           );
@@ -281,6 +301,19 @@ function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bil
       </div>
       <TxnTable rSales={rSales} rPurch={rPurch} bmap={bmap} />
     </>
+  );
+}
+
+function Kpi({ label, value, delta, icon, color, bg }: { label: string; value: string; delta: { cls: string; txt: string }; icon: string; color: string; bg: string }) {
+  return (
+    <div className="kpi-card">
+      <div className="kpi-top">
+        <div className="kpi-ic" style={{ background: bg, color }}><Icon name={icon} size={19} /></div>
+        <span className={"kpi-badge " + delta.cls}>{delta.txt}</span>
+      </div>
+      <div className="kpi-label">{label}</div>
+      <div className="kpi-value">{value}</div>
+    </div>
   );
 }
 
@@ -309,7 +342,7 @@ function TxnTable({ rSales, rPurch, bmap }: any) {
         <input className="search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
       <div className="table-wrap">
         <table>
-          <thead><tr><th>Time</th><th>Branch</th><th>Type</th><th>Customer / Supplier</th><th className="r">Amount</th><th className="r">Status</th></tr></thead>
+          <thead><tr><th>Time</th><th>Branch</th><th>Type</th><th>Customer / Supplier</th><th className="r">Amount</th><th className="r">Status</th><th className="r">Sync</th></tr></thead>
           <tbody>
             {rows.length ? rows.map((r, i) => (
               <tr key={i}>
@@ -318,9 +351,12 @@ function TxnTable({ rSales, rPurch, bmap }: any) {
                 <td>{r.type}</td>
                 <td>{r.who}</td>
                 <td className={"r amt " + r.dir}>{r.dir === "in" ? "+" : "−"}{money(r.amt)}</td>
-                <td className="r"><span className={"badge " + (r.synced === 0 ? "unpaid" : "done")}><span className="dot" />{r.synced === 0 ? "Pending" : "Completed"}</span></td>
+                <td className="r"><span className={"badge " + (r.dir === "in" ? "paid" : "role")}>{r.dir === "in" ? "Paid" : "Purchase"}</span></td>
+                <td className="r" style={{ color: r.synced === 0 ? "var(--amber)" : "var(--green)" }}>
+                  <Icon name={r.synced === 0 ? "sync" : "cloud"} size={16} />
+                </td>
               </tr>
-            )) : <tr><td colSpan={6}><div className="empty">No transactions.</div></td></tr>}
+            )) : <tr><td colSpan={7}><div className="empty">No transactions.</div></td></tr>}
           </tbody>
         </table>
       </div>
@@ -376,11 +412,11 @@ function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, 
       <button className="back" onClick={() => go("dashboard")}>‹ Back to overview</button>
       <h1 className="page-title">{b.name}</h1>
       <p className="page-sub">{b.location} · {rangeLabel(range).toLowerCase()}</p>
-      <div className="stats">
-        <div className="stat"><div className="label">Sales</div><div className="value" style={{ color: "var(--green)" }}>{money(sum(bs, "total"))}</div></div>
-        <div className="stat"><div className="label">Purchases</div><div className="value">{money(sum(bp, "total"))}</div></div>
-        <div className="stat"><div className="label">Expenses</div><div className="value" style={{ color: "var(--red)" }}>{money(sum(be, "amount"))}</div></div>
-        <div className="stat"><div className="label">Unpaid dues</div><div className="value" style={{ color: "var(--red)" }}>{money(due)}</div></div>
+      <div className="kpi-grid">
+        <Kpi label="Sales" value={money(sum(bs, "total"))} delta={{ cls: "up", txt: bs.length + " orders" }} icon="sales" color="var(--green)" bg="var(--green-soft)" />
+        <Kpi label="Purchases" value={money(sum(bp, "total"))} delta={{ cls: "down", txt: bp.length + " entries" }} icon="cart" color="var(--accent)" bg="var(--accent-soft)" />
+        <Kpi label="Expenses" value={money(sum(be, "amount"))} delta={{ cls: "down", txt: be.length + " entries" }} icon="wallet" color="var(--red)" bg="var(--red-soft)" />
+        <Kpi label="Unpaid dues" value={money(due)} delta={{ cls: "down", txt: "outstanding" }} icon="bill" color="var(--amber)" bg="var(--amber-soft)" />
       </div>
       <div className="card">
         <div className="card-head"><h3>Day Book — money in & out</h3></div>
@@ -485,10 +521,10 @@ function LedgerPage({ custAll, bmap, onSync, isMobile }: any) {
 
   return (
     <><h1 className="page-title">Ledger</h1><p className="page-sub">Customer balances (udhaar) across both branches.</p>
-      <div className="stats" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
-        <Stat label="Customers" value={String(rows.length)} delta={{ cls: "flat", txt: "all branches" }} icon="customers" />
-        <Stat label="With dues" value={String(withDue)} delta={{ cls: withDue > 0 ? "down" : "flat", txt: "need follow-up" }} icon="bill" />
-        <Stat label="Total outstanding" value={money(totalDue)} delta={{ cls: totalDue > 0 ? "down" : "up", txt: "across ledger" }} icon="book" />
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+        <Kpi label="Customers" value={String(rows.length)} delta={{ cls: "up", txt: "all branches" }} icon="customers" color="var(--accent)" bg="var(--accent-soft)" />
+        <Kpi label="With dues" value={String(withDue)} delta={{ cls: withDue > 0 ? "down" : "up", txt: "need follow-up" }} icon="bill" color="var(--amber)" bg="var(--amber-soft)" />
+        <Kpi label="Total outstanding" value={money(totalDue)} delta={{ cls: totalDue > 0 ? "down" : "up", txt: "across ledger" }} icon="book" color="var(--red)" bg="var(--red-soft)" />
       </div>
       <div className="card">
         <div className="card-head">
@@ -661,10 +697,10 @@ function PurchasesPage({ rPurch, purchAll, bmap, label, branches, products, user
 
   return (
     <><h1 className="page-title">Purchases</h1><p className="page-sub">What each branch bought, from whom, when · {showDeleted ? "deleted items" : String(label).toLowerCase()}.</p>
-      <div className="stats" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
-        <div className="stat"><div className="label">Total purchases</div><div className="value" style={{ color: "var(--red)" }}>{money(total)}</div></div>
-        <div className="stat"><div className="label">On credit (owed)</div><div className="value">{money(credit)}</div></div>
-        <div className="stat"><div className="label">Records</div><div className="value">{rows.length}</div></div>
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+        <Kpi label="Total purchases" value={money(total)} delta={{ cls: "down", txt: "outflow" }} icon="cart" color="var(--red)" bg="var(--red-soft)" />
+        <Kpi label="On credit (owed)" value={money(credit)} delta={{ cls: "down", txt: "to suppliers" }} icon="wallet" color="var(--amber)" bg="var(--amber-soft)" />
+        <Kpi label="Records" value={String(rows.length)} delta={{ cls: "up", txt: "purchase entries" }} icon="truck" color="var(--accent)" bg="var(--accent-soft)" />
       </div>
 
       {supTop.length > 0 && (

@@ -63,6 +63,59 @@ input, select { font-family: inherit; font-size: 15px; }
 .bento { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 .stock-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
 
+/* ============ OWNER DESKTOP: ProTrade POS sidebar/header (matches Stitch mockups) ============ */
+.pt-sidebar { padding: 24px 0; }
+.brand-pt { padding: 0 24px 28px; }
+.brand-pt b { display: block; font-size: 18px; font-weight: 800; color: var(--accent); letter-spacing: -.2px; }
+.brand-pt span { font-size: 13px; color: var(--muted); }
+.pt-nav { display: flex; flex-direction: column; gap: 3px; padding: 0 10px; flex: 1; overflow-y: auto; }
+.pt-nav-item { display: flex; align-items: center; gap: 11px; padding: 11px 14px; border-radius: 8px;
+  color: var(--muted); font-size: 14px; font-weight: 500; text-align: left; border-left: 4px solid transparent; }
+.pt-nav-item:hover { background: var(--surface-4); }
+.pt-nav-item.active { background: rgba(79,70,229,.1); color: var(--accent); font-weight: 700; border-left-color: var(--accent); }
+.pt-nav-foot { margin-top: auto; padding: 18px 24px 0; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+.pt-nav-foot b { display: block; font-size: 13px; font-weight: 600; }
+.pt-nav-foot span { font-size: 11px; color: var(--faint); }
+
+.pt-main { padding-top: 0; }
+.pt-header { gap: 16px; }
+.pt-header-search { flex: 1; max-width: 480px; display: flex; align-items: center; gap: 8px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 999px; padding: 9px 16px; color: var(--faint); }
+.pt-header-search input { flex: 1; background: none; border: none; font-size: 14px; color: var(--text); }
+.pt-header-search input:focus { outline: none; }
+.hide-mobile { display: flex; }
+
+.pt-content { padding-top: 26px; }
+.pt-content-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 22px; }
+.pt-page-title { font-size: 24px; font-weight: 700; letter-spacing: -.4px; margin: 0 0 4px; }
+.pt-page-sub { font-size: 14px; color: var(--muted); margin: 0; }
+
+/* KPI cards matching mockup: icon box top-left, %-badge top-right, label, big value */
+.kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 22px; }
+.kpi-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px;
+  transition: box-shadow .2s; }
+.kpi-card:hover { box-shadow: var(--shadow-lg); }
+.kpi-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px; }
+.kpi-ic { width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center; }
+.kpi-badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; display: inline-flex; align-items: center; gap: 3px; }
+.kpi-badge.up { background: var(--green-soft); color: var(--green); }
+.kpi-badge.down { background: var(--red-soft); color: var(--red); }
+.kpi-label { font-size: 12px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: .3px; }
+.kpi-value { font-size: 28px; font-weight: 700; letter-spacing: -.6px; margin-top: 4px; }
+
+.branch-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  display: flex; }
+.branch-card .thumb { width: 130px; flex-shrink: 0; background: var(--surface-3); display: grid; place-items: center; color: var(--faint); }
+.branch-card .bc-body { flex: 1; padding: 18px; min-width: 0; }
+.online-pill { font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 6px; background: var(--green-soft); color: var(--green); }
+
+@media (max-width: 1100px) { .kpi-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 900px) {
+  .hide-mobile { display: none; }
+  .kpi-grid { grid-template-columns: 1fr 1fr; }
+  .pt-content-head { flex-direction: column; align-items: stretch; }
+}
+
 /* ============ LOGIN ============ */
 .login { min-height: 100vh; display: flex; flex-direction: column; justify-content: center;
   align-items: center; padding: 24px; text-align: center;
@@ -135,6 +188,12 @@ input, select { font-family: inherit; font-size: 15px; }
 .content { padding: 24px 26px 40px; max-width: 1240px; }
 .page-title { font-size: 26px; font-weight: 700; letter-spacing: -.5px; margin: 4px 0 4px; }
 .page-sub { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
+/* desktop views already get their title from pt-content-head; hide their own plain (unstyled) page-title/page-sub to avoid duplication */
+.pt-content > .page-title, .pt-content > .page-sub { display: none; }
+@media (max-width: 900px) {
+  .pt-content-head .seg, .pt-content-head input[type="date"] { display: none; }
+  .pt-content > .page-title, .pt-content > .page-sub { display: block; }
+}
 
 /* stat cards */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 22px; }
