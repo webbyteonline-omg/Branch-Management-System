@@ -56,7 +56,7 @@ export function ResetStaffPassword() {
     <div className="form-grid">
       <div className="qty-row">
         <div className="field"><label>Staff User ID</label><input value={id} onChange={(e) => setId(e.target.value)} placeholder="e.g. seppa" autoCapitalize="none" /></div>
-        <div className="field"><label>New password</label><input type="text" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Min 6 chars" /></div>
+        <div className="field"><label>New password</label><input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Min 6 chars" autoComplete="new-password" /></div>
       </div>
       <div><button className="btn" style={{ width: "auto", padding: "11px 20px" }} onClick={reset} disabled={busy}>{busy ? "Resetting…" : "Reset staff password"}</button></div>
     </div>

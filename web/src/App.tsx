@@ -61,6 +61,24 @@ export function App() {
     return subscribeRealtime(() => {});
   }, [profile]);
 
+  // Safety net: mountain internet drops WebSockets silently sometimes, and a
+  // dropped Realtime channel doesn't always self-heal. A light background
+  // pull every 20s keeps the owner's dashboard correct even if the live
+  // socket died, with no visible delay for the user.
+  useEffect(() => {
+    if (!profile) return;
+    const id = setInterval(() => { if (navigator.onLine && !manualOffline) sync(); }, 20_000);
+    return () => clearInterval(id);
+  }, [profile, manualOffline, sync]);
+
+  // Also re-sync whenever the tab regains focus/visibility — covers the
+  // common case of switching apps and coming back.
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === "visible") sync(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [sync]);
+
   const toggleOnline = () => {
     setManualOffline((v) => {
       const next = !v;

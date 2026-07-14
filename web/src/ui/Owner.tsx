@@ -469,6 +469,9 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
               <div className="field"><label>Cost price</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
               <div className="field"><label>Sale price</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
             </div>
+            <div className="field"><label>Pieces per box (optional)</label>
+              <input type="number" inputMode="numeric" value={edit.pieces_per_box ?? ""} onChange={(e) => setEdit({ ...edit, pieces_per_box: e.target.value === "" ? null : +e.target.value })} placeholder="e.g. 12 — leave blank if not sold by box" />
+            </div>
             <div className="btn-row"><button className="btn ghost" onClick={() => setEdit(null)}>Cancel</button><button className="btn" onClick={save}>Save product</button></div>
           </div>
         </Modal>

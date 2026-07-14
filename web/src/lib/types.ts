@@ -23,6 +23,7 @@ export interface Product {
   cost_price: number;
   low_stock_at?: number;
   branch_id?: string | null; // null = all branches
+  pieces_per_box?: number | null; // e.g. 12 = 1 box has 12 pcs; null/0 = box selling not used
   active?: boolean;
   deleted_at?: string | null;
 }
@@ -37,9 +38,13 @@ export interface Sale {
   qty: number;
   price: number;
   total: number;
-  discount?: number;
+  discount?: number; // percent discount amount (kept for back-compat / server trigger)
+  discount_type?: "percent" | "flat";
+  discount_value?: number; // the raw entered value (percent number or flat rupees)
+  payment_mode?: "cash" | "upi" | "credit" | "both";
+  cash_amount?: number; // only used when payment_mode === "both"
+  upi_amount?: number;  // only used when payment_mode === "both"
   bill_no?: string | null;
-  payment_mode?: "cash" | "upi" | "credit";
   created_at: string;
   deleted_at?: string | null;
   _synced?: 0 | 1; // local-only flag (not sent to server)
@@ -77,6 +82,7 @@ export interface Bill {
   id: string;
   branch_id: string;
   customer_name: string;
+  bill_no?: string | null; // links back to the sales bill_no this udhaar came from, if any
   amount: number;
   paid: number;
   due_amount: number;

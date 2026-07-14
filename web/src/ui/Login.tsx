@@ -8,13 +8,25 @@ export function Login() {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [showForgot, setShowForgot] = useState(false);
+  const [fails, setFails] = useState(0);
+  const [lockUntil, setLockUntil] = useState(0);
 
   const submit = async () => {
+    if (Date.now() < lockUntil) return;
     setErr(""); setBusy(true);
     const { error } = await supabase.auth.signInWithPassword({ email: idToEmail(userId), password });
     setBusy(false);
-    if (error) setErr("Wrong ID or password.");
+    if (error) {
+      const n = fails + 1;
+      setFails(n);
+      // Brief cooldown after repeated wrong attempts — slows down guessing scripts.
+      if (n >= 5) { setLockUntil(Date.now() + 30_000); setErr("Too many attempts. Wait 30 seconds and try again."); }
+      else setErr("Wrong ID or password.");
+    } else {
+      setFails(0);
+    }
   };
+  const locked = Date.now() < lockUntil;
 
   return (
     <div className="login">
@@ -34,7 +46,7 @@ export function Login() {
             type="password" placeholder="••••••••" autoComplete="current-password"
             onKeyDown={(e) => e.key === "Enter" && submit()} />
         </div>
-        <button className="btn" onClick={submit} disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+        <button className="btn" onClick={submit} disabled={busy || locked}>{busy ? "Signing in…" : locked ? "Please wait…" : "Sign in"}</button>
         <div className="err">{err}</div>
         <button className="forgot-link" onClick={() => setShowForgot((v) => !v)}>Forgot password?</button>
         {showForgot && (

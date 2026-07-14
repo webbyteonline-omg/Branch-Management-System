@@ -27,17 +27,26 @@ export async function pullAll(profile: Profile): Promise<void> {
   if (settings.data) await localdb.settings.put(settings.data as any);
 
   // Never overwrite a locally-unsynced row with the server copy.
+  // Batched: one bulk read of local rows instead of an await-per-row loop,
+  // which is what made pullAll() slow once a branch had thousands of rows.
   const mergeKeep = async (table: any, rows: any[]) => {
-    for (const r of rows) {
-      const local = await table.get(r.id);
-      if (!local || local._synced !== 0) await table.put({ ...r, _synced: 1 });
-    }
+    if (!rows.length) return;
+    const ids = rows.map((r) => r.id);
+    const locals = await table.bulkGet(ids);
+    const toPut: any[] = [];
+    rows.forEach((r, i) => {
+      const local = locals[i];
+      if (!local || local._synced !== 0) toPut.push({ ...r, _synced: 1 });
+    });
+    if (toPut.length) await table.bulkPut(toPut);
   };
-  if (sales.data) await mergeKeep(localdb.sales, sales.data);
-  if (purchases.data) await mergeKeep(localdb.purchases, purchases.data);
-  if (customers.data) await mergeKeep(localdb.customers, customers.data);
-  if (bills.data) await mergeKeep(localdb.bills, bills.data);
-  if (expenses.data) await mergeKeep(localdb.expenses, expenses.data);
+  await Promise.all([
+    sales.data ? mergeKeep(localdb.sales, sales.data) : null,
+    purchases.data ? mergeKeep(localdb.purchases, purchases.data) : null,
+    customers.data ? mergeKeep(localdb.customers, customers.data) : null,
+    bills.data ? mergeKeep(localdb.bills, bills.data) : null,
+    expenses.data ? mergeKeep(localdb.expenses, expenses.data) : null,
+  ]);
 }
 
 /** Upload everything still marked unsynced. Idempotent: the client-generated
@@ -94,22 +103,44 @@ export async function pushPending(): Promise<number> {
 
 /** Live updates so the owner's dashboard reflects branch activity instantly.
  *  Every insert/update/delete from any device is written into the local store,
- *  and Dexie's live queries re-render the UI within a second — no refresh. */
+ *  and Dexie's live queries re-render the UI within a second — no refresh.
+ *  Reconnects automatically if the socket drops (flaky mountain internet) —
+ *  Supabase channels don't always self-heal after a network blip. */
 export function subscribeRealtime(onChange: () => void) {
   const tables: Record<string, any> = {
     sales: localdb.sales, purchases: localdb.purchases, bills: localdb.bills,
     expenses: localdb.expenses, customers: localdb.customers,
   };
-  const ch = supabase.channel("branch-activity");
-  for (const [name, table] of Object.entries(tables)) {
-    ch.on("postgres_changes", { event: "*", schema: "public", table: name }, async (p) => {
-      try {
-        if (p.eventType === "DELETE" && (p.old as any)?.id) await table.delete((p.old as any).id);
-        else if ((p.new as any)?.id) await table.put({ ...(p.new as any), _synced: 1 });
-      } catch { /* ignore */ }
-      onChange();
+  let ch: ReturnType<typeof supabase.channel> | null = null;
+  let stopped = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const connect = () => {
+    if (stopped) return;
+    ch = supabase.channel("branch-activity-" + Date.now());
+    for (const [name, table] of Object.entries(tables)) {
+      ch.on("postgres_changes", { event: "*", schema: "public", table: name }, async (p) => {
+        try {
+          if (p.eventType === "DELETE" && (p.old as any)?.id) await table.delete((p.old as any).id);
+          else if ((p.new as any)?.id) await table.put({ ...(p.new as any), _synced: 1 });
+        } catch { /* ignore */ }
+        onChange();
+      });
+    }
+    ch.subscribe((status) => {
+      if (stopped) return;
+      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+        // Drop and reconnect after a short delay instead of staying dead silently.
+        if (ch) supabase.removeChannel(ch);
+        retryTimer = setTimeout(connect, 4000);
+      }
     });
-  }
-  ch.subscribe();
-  return () => { supabase.removeChannel(ch); };
+  };
+  connect();
+
+  return () => {
+    stopped = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    if (ch) supabase.removeChannel(ch);
+  };
 }

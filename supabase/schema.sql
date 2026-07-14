@@ -36,42 +36,52 @@ create table if not exists public.profiles (
 );
 
 create table if not exists public.products (
-  id           uuid primary key default gen_random_uuid(),
-  name         text not null,
-  unit         text not null default 'pcs',
-  sale_price   numeric(12,2) not null default 0,
-  cost_price   numeric(12,2) not null default 0,
-  low_stock_at numeric(12,2) not null default 5,   -- alert threshold
-  branch_id    text references public.branches(id),-- null = available to all branches
-  active       boolean not null default true,
-  created_at   timestamptz not null default now(),
-  deleted_at   timestamptz                         -- soft delete
+  id              uuid primary key default gen_random_uuid(),
+  name            text not null,
+  unit            text not null default 'pcs',
+  sale_price      numeric(12,2) not null default 0,
+  cost_price      numeric(12,2) not null default 0,
+  low_stock_at    numeric(12,2) not null default 5,   -- alert threshold
+  branch_id       text references public.branches(id),-- null = available to all branches
+  pieces_per_box  numeric(12,2),                       -- e.g. 12 = 1 box has 12 pcs (null/0 = box selling not used for this product)
+  active          boolean not null default true,
+  created_at      timestamptz not null default now(),
+  deleted_at      timestamptz                         -- soft delete
 );
 alter table public.products add column if not exists branch_id text references public.branches(id);
+alter table public.products add column if not exists pieces_per_box numeric(12,2);
 
 -- Transactional tables use a CLIENT-GENERATED uuid as primary key.
 -- The phone creates the id offline; sync does an upsert -> the same
 -- entry can never be inserted twice (idempotent, zero duplicates).
 create table if not exists public.sales (
-  id            uuid primary key,
-  branch_id     text not null references public.branches(id),
-  created_by    uuid references public.profiles(id),
-  product_id    uuid references public.products(id),
-  product_name  text not null,
-  customer_name text default 'Walk-in',
-  qty           numeric(12,2) not null,
-  price         numeric(12,2) not null,
-  total         numeric(12,2) not null,
-  discount      numeric(12,2) not null default 0,  -- percent discount on the line
-  bill_no       text,                              -- groups items of one bill
-  payment_mode  text not null default 'cash',      -- cash | upi | credit
-  created_at    timestamptz not null default now(),
-  deleted_at    timestamptz
+  id             uuid primary key,
+  branch_id      text not null references public.branches(id),
+  created_by     uuid references public.profiles(id),
+  product_id     uuid references public.products(id),
+  product_name   text not null,
+  customer_name  text default 'Walk-in',
+  qty            numeric(12,2) not null,
+  price          numeric(12,2) not null,
+  total          numeric(12,2) not null,
+  discount       numeric(12,2) not null default 0,  -- percent discount on the line (back-compat)
+  discount_type  text,                              -- 'percent' | 'flat'
+  discount_value numeric(12,2),                     -- raw entered discount value
+  bill_no        text,                              -- groups items of one bill
+  payment_mode   text not null default 'cash',      -- cash | upi | credit | both
+  cash_amount    numeric(12,2),                     -- only set when payment_mode = 'both'
+  upi_amount     numeric(12,2),                     -- only set when payment_mode = 'both'
+  created_at     timestamptz not null default now(),
+  deleted_at     timestamptz
 );
 -- for existing databases (safe to re-run):
 alter table public.sales add column if not exists bill_no text;
 alter table public.sales add column if not exists payment_mode text not null default 'cash';
 alter table public.sales add column if not exists discount numeric(12,2) not null default 0;
+alter table public.sales add column if not exists discount_type text;
+alter table public.sales add column if not exists discount_value numeric(12,2);
+alter table public.sales add column if not exists cash_amount numeric(12,2);
+alter table public.sales add column if not exists upi_amount numeric(12,2);
 
 create table if not exists public.purchases (
   id            uuid primary key,
@@ -107,6 +117,7 @@ create table if not exists public.bills (
   id            uuid primary key,
   branch_id     text not null references public.branches(id),
   customer_name text not null,
+  bill_no       text,                              -- links back to the sales bill_no, if any
   amount        numeric(12,2) not null,
   paid          numeric(12,2) not null default 0,
   due_amount    numeric(12,2) not null default 0,
@@ -114,6 +125,7 @@ create table if not exists public.bills (
   created_at    timestamptz not null default now(),
   deleted_at    timestamptz
 );
+alter table public.bills add column if not exists bill_no text;
 
 -- shop expenses (rent, transport, salary, etc.) — feeds the day book
 create table if not exists public.expenses (
@@ -238,3 +250,47 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+
+-- ---------- server-side total validation (anti-tamper) ----------
+-- A modified client could otherwise POST a fabricated `total` on a sale or
+-- purchase while keeping qty/price small. These triggers recompute the
+-- expected amount from qty/price/discount (percent or flat) and reject
+-- totals that fall outside a small rounding tolerance. Billing is simple
+-- (no GST), so this is a tight check, not a range.
+create or replace function public.check_sale_total()
+  returns trigger language plpgsql as $$
+declare gross numeric(12,2); disc numeric(12,2); expected numeric(12,2);
+begin
+  gross := new.qty * new.price;
+  if new.discount_type = 'flat' then
+    disc := coalesce(new.discount_value, 0);
+  else
+    disc := gross * coalesce(new.discount_value, new.discount, 0) / 100.0;
+  end if;
+  expected := round(greatest(0, gross - disc), 2);
+  if abs(new.total - expected) > 1.0 then
+    raise exception 'sales.total (%) does not match expected amount % (qty*price minus discount)', new.total, expected;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_check_sale_total on public.sales;
+create trigger trg_check_sale_total
+  before insert or update on public.sales
+  for each row execute function public.check_sale_total();
+
+create or replace function public.check_purchase_total()
+  returns trigger language plpgsql as $$
+declare expected numeric(12,2);
+begin
+  expected := round(new.qty * new.cost, 2);
+  if abs(new.total - expected) > 1.0 then
+    raise exception 'purchases.total (%) does not match qty*cost = %', new.total, expected;
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_check_purchase_total on public.purchases;
+create trigger trg_check_purchase_total
+  before insert or update on public.purchases
+  for each row execute function public.check_purchase_total();

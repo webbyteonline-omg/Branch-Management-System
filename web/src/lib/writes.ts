@@ -33,11 +33,16 @@ export async function addExpense(branchId: string, createdBy: string, category: 
   await localdb.expenses.add(row);
 }
 
-export interface CartItem { product_id: string; name: string; qty: number; price: number; discount?: number; }
+export interface CartItem {
+  product_id: string; name: string; qty: number; price: number;
+  discountType?: "percent" | "flat"; discountValue?: number;
+  discount?: number; // legacy percent-only field, kept for older callers
+}
 
 /** POS billing: saves a multi-item bill as grouped sales rows sharing one
- *  bill_no + payment mode. Applies per-item discount % and a bill-level GST %.
- *  Credit bills also create an udhaar entry and bump the customer balance. */
+ *  bill_no + payment mode. Applies per-item discount (percent or flat).
+ *  Any unpaid portion creates a linked udhaar entry and bumps the customer's
+ *  ledger balance — this is what makes the Ledger/Bills pages update instantly. */
 export function branchCode(branch: { id: string; name?: string } | undefined, id: string): string {
   const base = (branch?.name || id).replace(/\s*branch\s*/i, "").trim();
   return base.slice(0, 3).toUpperCase() || id.slice(0, 3).toUpperCase();
@@ -57,33 +62,76 @@ export async function nextBillNo(branchId: string): Promise<string> {
   return `${prefix}-${String(max + 1).padStart(4, "0")}`;
 }
 
+export type SaleItemTotal = { lineTotal: number; discountAmt: number };
+export function computeLineTotal(qty: number, price: number, discountType?: "percent" | "flat", discountValue?: number): SaleItemTotal {
+  const gross = qty * price;
+  const dv = Number(discountValue) || 0;
+  const discountAmt = discountType === "flat" ? Math.min(gross, dv) : gross * dv / 100;
+  return { lineTotal: Math.max(0, gross - discountAmt), discountAmt };
+}
+
+export interface PaymentInput {
+  mode: "cash" | "upi" | "both" | "credit";
+  amountPaid: number;      // 0 = fully unpaid; >= total = fully paid; else partial
+  cashAmount?: number;     // only when mode === "both"
+  upiAmount?: number;      // only when mode === "both"
+}
+
+/** Create/update the customer record automatically the first time a name is
+ *  billed (so the name shows up in future dropdowns) — separate from
+ *  addCustomer() which is the explicit "Add customer" form action. */
+export async function ensureCustomer(branchId: string, name: string, phone?: string): Promise<void> {
+  const n = name.trim();
+  if (!n || n.toLowerCase() === "walk-in") return;
+  const existing = (await localdb.customers.where("branch_id").equals(branchId).toArray())
+    .find((c) => c.name.toLowerCase() === n.toLowerCase());
+  if (existing) {
+    if (phone && !existing.phone) await localdb.customers.put({ ...existing, phone, _synced: 0 });
+    return;
+  }
+  await localdb.customers.add({ id: uuid(), branch_id: branchId, name: n, phone: phone?.trim() || null, balance_due: 0, _synced: 0 });
+}
+
 export async function createSaleBill(
   branchId: string, userId: string, customerName: string,
-  paymentMode: "cash" | "upi" | "credit", items: CartItem[], gstPercent = 0,
-): Promise<{ billNo: string; total: number }> {
+  payment: PaymentInput, items: CartItem[],
+): Promise<{ billNo: string; total: number; due: number }> {
   const billNo = await nextBillNo(branchId);
   const cust = customerName.trim() || "Walk-in";
-  const gst = 1 + (Number(gstPercent) || 0) / 100;
   let total = 0;
   const now = new Date().toISOString();
+
   for (const it of items) {
-    const disc = Number(it.discount) || 0;
-    const net = it.qty * it.price * (1 - disc / 100) * gst;
-    total += net;
+    const dType = it.discountType ?? (it.discount ? "percent" : undefined);
+    const dValue = it.discountValue ?? it.discount ?? 0;
+    const { lineTotal } = computeLineTotal(it.qty, it.price, dType, dValue);
+    total += lineTotal;
     await localdb.sales.add({
       id: uuid(), branch_id: branchId, created_by: userId, product_id: it.product_id,
-      product_name: it.name, customer_name: cust, qty: it.qty, price: it.price, total: net,
-      discount: disc, bill_no: billNo, payment_mode: paymentMode, created_at: now, deleted_at: null, _synced: 0,
+      product_name: it.name, customer_name: cust, qty: it.qty, price: it.price, total: lineTotal,
+      discount: dType === "percent" ? dValue : 0, discount_type: dType, discount_value: dValue,
+      bill_no: billNo, payment_mode: payment.mode,
+      cash_amount: payment.mode === "both" ? Number(payment.cashAmount) || 0 : undefined,
+      upi_amount: payment.mode === "both" ? Number(payment.upiAmount) || 0 : undefined,
+      created_at: now, deleted_at: null, _synced: 0,
     });
   }
-  if (paymentMode === "credit") {
+
+  total = Math.round(total * 100) / 100;
+  const paidNow = payment.mode === "credit" ? 0 : Math.min(total, Math.max(0, Number(payment.amountPaid) || 0));
+  const due = Math.max(0, total - paidNow);
+
+  if (due > 0) {
     await localdb.bills.add({
-      id: uuid(), branch_id: branchId, customer_name: cust, amount: total, paid: 0,
-      due_amount: total, status: "unpaid", created_at: now, deleted_at: null, _synced: 0,
+      id: uuid(), branch_id: branchId, customer_name: cust, bill_no: billNo,
+      amount: total, paid: paidNow, due_amount: due, status: "unpaid",
+      created_at: now, deleted_at: null, _synced: 0,
     });
-    await bumpCustomerBalance(branchId, cust, total);
+    await ensureCustomer(branchId, cust);
+    await bumpCustomerBalance(branchId, cust, due);
   }
-  return { billNo, total };
+
+  return { billNo, total, due };
 }
 
 /** Settle a customer's dues across their unpaid bills, oldest first. */
@@ -182,7 +230,8 @@ export async function saveProduct(p: Partial<Product> & { name: string }, online
     id: p.id ?? crypto.randomUUID(),
     name: p.name.trim(), unit: p.unit || "pcs",
     sale_price: Number(p.sale_price) || 0, cost_price: Number(p.cost_price) || 0,
-    low_stock_at: Number(p.low_stock_at ?? 5), branch_id: p.branch_id ?? null, active: true,
+    low_stock_at: Number(p.low_stock_at ?? 5), branch_id: p.branch_id ?? null,
+    pieces_per_box: p.pieces_per_box ? Number(p.pieces_per_box) : null, active: true,
   };
   const { error } = await supabase.from("products").upsert(row);
   if (error) return false;

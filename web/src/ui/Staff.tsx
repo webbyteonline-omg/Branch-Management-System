@@ -8,9 +8,10 @@ import { Modal } from "./Modal";
 import { ChangePasswordModal } from "./Account";
 import { LedgerModal } from "./Ledger";
 import { EditCustomerModal, EditEntryModal, EditBillModal } from "./Edits";
-import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, type CartItem } from "../lib/writes";
+import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, computeLineTotal, settleCustomerDues, type CartItem } from "../lib/writes";
 import { printInvoice, printItemizedBill } from "../lib/invoice";
 import { sum, live, computeStock, productsForBranch, type SharedProps } from "./shared";
+import { BarChart } from "./Charts";
 import type { Purchase, Bill as BillT } from "../lib/types";
 
 const confirmDel = (what: string) => window.confirm(`Delete this ${what}? It can be restored by the owner.`);
@@ -99,65 +100,57 @@ export function Staff(p: SharedProps) {
 }
 
 /* ---------- Dashboard ---------- */
+function last7DaysSales(sales: { created_at: string; total: number }[]) {
+  const days: { label: string; value: number }[] = [];
+  const now = new Date(); now.setHours(0, 0, 0, 0);
+  for (let i = 6; i >= 0; i--) {
+    const start = now.getTime() - i * 86400000;
+    const end = start + 86400000;
+    const val = sales.filter((s) => { const t = new Date(s.created_at).getTime(); return t >= start && t < end; }).reduce((a, s) => a + s.total, 0);
+    days.push({ label: new Date(start).toLocaleDateString("en-IN", { day: "2-digit", month: "short" }), value: val });
+  }
+  return days;
+}
+
 function StaffDashboard({ branchId, branchName, shared, go }: { branchId: string; branchName: string; shared: SharedProps; go: (t: Tab) => void }) {
   const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const purch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const expenses = live(useLiveQuery(() => localdb.expenses.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const bills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
 
   const today = rangeStart("today");
   const todaySales = sales.filter((s) => new Date(s.created_at).getTime() >= today);
-  const todayPurch = purch.filter((s) => new Date(s.created_at).getTime() >= today);
-  const todayExp = expenses.filter((s) => new Date(s.created_at).getTime() >= today);
-  const inT = sum(todaySales, "total");
-  const outT = sum(todayPurch, "total") + sum(todayExp, "amount");
+  const sold = sum(todaySales, "total");
+
+  // Money actually received today: a sale with no linked bill (bills.bill_no)
+  // was paid in full at billing time, so its full total counts. A sale with
+  // a linked bill only contributes what that bill's `paid` tracks (per-line
+  // paid amounts aren't stored separately) — summing the bill's `paid` once
+  // per bill_no (not per line) avoids double-counting multi-item bills.
+  const billNosToday = new Set(bills.filter((b) => new Date(b.created_at).getTime() >= today).map((b) => b.bill_no));
+  const fullyPaidToday = sum(todaySales.filter((s) => !billNosToday.has(s.bill_no ?? null)), "total");
+  const partialPaidToday = sum(bills.filter((b) => new Date(b.created_at).getTime() >= today), "paid");
+  const receivedToday = fullyPaidToday + partialPaidToday;
+
   const due = sum(bills.filter((b) => b.status === "unpaid"), "due_amount");
 
-  const lowStock = products.filter((pr) => computeStock(pr.id, branchId, sales, purch) <= (pr.low_stock_at ?? 5));
-
-  const recent = [
-    ...sales.map((s) => ({ id: s.id, t: s.created_at, label: `Sale · ${s.product_name} × ${s.qty}`, amt: s.total, dir: "in" as const })),
-    ...purch.map((x) => ({ id: x.id, t: x.created_at, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out" as const })),
-  ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 8);
+  const chartData = last7DaysSales(sales);
 
   return (
     <>
+      <div className="btn-row" style={{ marginBottom: 14 }}>
+        <button className="btn" onClick={() => go("sale")}>+ New Bill</button>
+      </div>
       <h1 className="page-title" style={{ fontSize: 22 }}>{branchName}</h1>
       <p className="page-sub" style={{ marginBottom: 14 }}>Today's overview</p>
       <div className="m-stats">
-        <div className="stat"><div className="label">Sales today</div><div className="value" style={{ color: "var(--green)", fontSize: 18 }}>{money(inT)}</div></div>
-        <div className="stat"><div className="label">Spent today</div><div className="value" style={{ color: "var(--red)", fontSize: 18 }}>{money(outT)}</div></div>
-        <div className="stat"><div className="label">Net today</div><div className="value" style={{ fontSize: 18 }}>{money(inT - outT)}</div></div>
-        <div className="stat"><div className="label">Udhaar due</div><div className="value" style={{ fontSize: 18, color: due > 0 ? "var(--red)" : "var(--green)" }}>{money(due)}</div></div>
+        <div className="stat"><div className="label">Sold today</div><div className="value" style={{ color: "var(--green)", fontSize: 18 }}>{money(sold)}</div></div>
+        <div className="stat"><div className="label">Received today</div><div className="value" style={{ color: "var(--green)", fontSize: 18 }}>{money(receivedToday)}</div></div>
+        <div className="stat" style={{ gridColumn: "1 / -1" }}><div className="label">Due amount</div><div className="value" style={{ fontSize: 18, color: due > 0 ? "var(--red)" : "var(--green)" }}>{money(due)}</div></div>
       </div>
 
-      {lowStock.length > 0 && (
-        <div className="card alert-card" style={{ marginBottom: 16 }}>
-          <div className="card-head"><h3>⚠ Low stock ({lowStock.length})</h3><button className="edit-btn" onClick={() => go("stock")}>View stock</button></div>
-          <div className="card-pad" style={{ paddingTop: 6 }}>
-            <div className="chips">
-              {lowStock.slice(0, 8).map((pr) => <span key={pr.id} className="chip">{pr.name} · <b className="stock low" style={{ padding: 0, background: "none" }}>{computeStock(pr.id, branchId, sales, purch)}</b></span>)}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="card">
-        <div className="card-head"><h3>Recent activity</h3></div>
-        <div className="card-pad" style={{ paddingTop: 6 }}>
-          {recent.length ? recent.map((i) => (
-            <div className="row" key={i.id}><div><div className="main">{i.label}</div><div className="sub">{dateStr(i.t)} · {timeStr(i.t)}</div></div>
-              <div className={"amt " + i.dir}>{i.dir === "in" ? "+" : "−"}{money(i.amt)}</div></div>
-          )) : <div className="empty">No activity yet today.</div>}
-        </div>
+      <div className="card card-pad">
+        <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>Sales — last 7 days</h3>
+        <BarChart data={chartData} color="var(--accent)" />
       </div>
-
-      <div className="btn-row" style={{ marginTop: 16 }}>
-        <button className="btn ghost" onClick={() => go("sale")}>+ New Bill</button>
-        <button className="btn ghost" onClick={() => go("purchase")}>+ Purchase</button>
-      </div>
-      <div style={{ height: 8 }} />
       {!shared && null}
     </>
   );
@@ -198,39 +191,128 @@ function StaffStock({ branchId }: { branchId: string }) {
   );
 }
 
-/* ---------- Ledger (all customers) ---------- */
+/* ---------- Ledger (all customers, Outstanding / Paid tabs) ---------- */
 function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const cust = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const bills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []))
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const [q, setQ] = useState("");
   const [ledger, setLedger] = useState<string | null>(null);
-  const rows = cust.filter((c) => c.name.toLowerCase().includes(q.toLowerCase()))
+  const [tab, setTab] = useState<"outstanding" | "paid">("outstanding");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [payFor, setPayFor] = useState<{ name: string; due: number } | null>(null);
+  const [payAmt, setPayAmt] = useState<number | "">("");
+
+  const toggle = (name: string) => setExpanded((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; });
+
+  const outstandingRows = cust.filter((c) => c.balance_due > 0 && c.name.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => b.balance_due - a.balance_due);
-  const totalDue = sum(rows, "balance_due");
+  const totalDue = sum(outstandingRows, "balance_due");
+
+  // "Paid" = customers with no outstanding balance who have at least one bill history entry.
+  const paidNames = [...new Set(bills.filter((b) => b.status === "paid").map((b) => b.customer_name))]
+    .filter((n) => !cust.find((c) => c.name === n && c.balance_due > 0))
+    .filter((n) => n.toLowerCase().includes(q.toLowerCase()));
+
+  const billsFor = (name: string) => bills.filter((b) => b.customer_name === name);
+
+  const doPay = async () => {
+    if (!payFor) return;
+    const amt = Number(payAmt) || 0;
+    if (amt <= 0) return toast("Enter amount");
+    const applied = await settleCustomerDues(branchId, payFor.name, amt);
+    toast(applied > 0 ? `${money(applied)} settled for ${payFor.name}` : "No dues to settle");
+    setPayFor(null); setPayAmt(""); shared.onSync();
+  };
 
   return (
     <>
       <h1 className="page-title" style={{ fontSize: 22 }}>Ledger</h1>
-      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr" }}>
-        <div className="stat"><div className="label">Customers</div><div className="value" style={{ fontSize: 18 }}>{rows.length}</div></div>
-        <div className="stat"><div className="label">Total outstanding</div><div className="value" style={{ fontSize: 18, color: totalDue > 0 ? "var(--red)" : "var(--green)" }}>{money(totalDue)}</div></div>
+      <div className="seg" style={{ marginBottom: 14 }}>
+        <button className={tab === "outstanding" ? "active" : ""} onClick={() => setTab("outstanding")}>Outstanding</button>
+        <button className={tab === "paid" ? "active" : ""} onClick={() => setTab("paid")}>Paid</button>
       </div>
-      <div className="card">
-        <div className="card-head"><h3>Customer balances</h3><input className="search" placeholder="Search customer…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
-        <div className="card-pad" style={{ paddingTop: 6 }}>
-          {rows.length ? rows.map((c) => (
-            <div className="row" key={c.id} style={{ cursor: "pointer" }} onClick={() => setLedger(c.name)}>
-              <div><div className="main">{c.name}</div><div className="sub">{c.phone || "—"} · tap for ledger</div></div>
-              <div className={"amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) + " due" : "Clear"}</div>
+
+      {tab === "outstanding" ? (
+        <>
+          <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr" }}>
+            <div className="stat"><div className="label">Customers with dues</div><div className="value" style={{ fontSize: 18 }}>{outstandingRows.length}</div></div>
+            <div className="stat"><div className="label">Total outstanding</div><div className="value" style={{ fontSize: 18, color: totalDue > 0 ? "var(--red)" : "var(--green)" }}>{money(totalDue)}</div></div>
+          </div>
+          <div className="card">
+            <div className="card-head"><h3>Customer balances</h3><input className="search" placeholder="Search customer…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+            <div className="card-pad" style={{ paddingTop: 6 }}>
+              {outstandingRows.length ? outstandingRows.map((c) => {
+                const isOpen = expanded.has(c.name);
+                const cBills = billsFor(c.name).filter((b) => b.status === "unpaid");
+                return (
+                  <div key={c.id}>
+                    <div className="row" style={{ cursor: "pointer" }} onClick={() => toggle(c.name)}>
+                      <div><div className="main">{c.name}</div><div className="sub">{c.phone || "—"} · {cBills.length} bill{cBills.length === 1 ? "" : "s"} due · {isOpen ? "hide" : "tap to see bills"}</div></div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div className="amt out">{money(c.balance_due)}</div>
+                        <button className="pay-btn" onClick={(e) => { e.stopPropagation(); setPayFor({ name: c.name, due: c.balance_due }); setPayAmt(c.balance_due); }}>Pay</button>
+                        <button className="edit-btn" onClick={(e) => { e.stopPropagation(); setLedger(c.name); }}>Full ledger</button>
+                      </div>
+                    </div>
+                    {isOpen && cBills.map((b) => (
+                      <div className="row" key={b.id} style={{ paddingLeft: 14, background: "var(--surface-2)" }}>
+                        <div><div className="main" style={{ fontSize: 13 }}>{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"}</div>
+                          <div className="sub">{dateStr(b.created_at)} · paid {money(b.paid)} of {money(b.amount)}</div></div>
+                        <div className="amt out">{money(b.due_amount)}</div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              }) : <div className="empty">No outstanding dues. All clear!</div>}
             </div>
-          )) : <div className="empty">No customers yet.</div>}
+          </div>
+        </>
+      ) : (
+        <div className="card">
+          <div className="card-head"><h3>Paid customers</h3><input className="search" placeholder="Search customer…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+          <div className="card-pad" style={{ paddingTop: 6 }}>
+            {paidNames.length ? paidNames.map((name) => {
+              const isOpen = expanded.has(name);
+              const cBills = billsFor(name).filter((b) => b.status === "paid");
+              const total = sum(cBills, "amount");
+              return (
+                <div key={name}>
+                  <div className="row" style={{ cursor: "pointer" }} onClick={() => toggle(name)}>
+                    <div><div className="main">{name}</div><div className="sub">{cBills.length} bill{cBills.length === 1 ? "" : "s"} settled · {isOpen ? "hide" : "tap to see bills"}</div></div>
+                    <div className="amt in">{money(total)}</div>
+                  </div>
+                  {isOpen && cBills.map((b) => (
+                    <div className="row" key={b.id} style={{ paddingLeft: 14, background: "var(--surface-2)" }}>
+                      <div><div className="main" style={{ fontSize: 13 }}>{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"}</div>
+                        <div className="sub">{dateStr(b.created_at)}</div></div>
+                      <span className="badge paid">Paid</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            }) : <div className="empty">No settled bills yet.</div>}
+          </div>
         </div>
-      </div>
+      )}
+
+      {payFor && (
+        <Modal title={`Pay — ${payFor.name}`} onClose={() => setPayFor(null)}>
+          <div className="form-grid">
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Outstanding: <b style={{ color: "var(--red)" }}>{money(payFor.due)}</b></p>
+            <div className="field"><label>Amount received</label><input type="number" inputMode="numeric" value={payAmt} onChange={(e) => setPayAmt(e.target.value === "" ? "" : +e.target.value)} /></div>
+            <div className="btn-row"><button className="btn ghost" onClick={() => setPayFor(null)}>Cancel</button><button className="btn" onClick={doPay}>Record payment</button></div>
+          </div>
+        </Modal>
+      )}
       {ledger && <LedgerModal branchId={branchId} name={ledger} onClose={() => setLedger(null)} onSync={shared.onSync} />}
     </>
   );
 }
 
-/* ---------- Sale ---------- */
+/* ---------- Sale (New Bill) ---------- */
+type DiscType = "none" | "5" | "10" | "custom" | "flat";
+
 function BillingForm({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
   const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
   const branchSales = useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []);
@@ -238,45 +320,88 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
   const customers = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const settings = useLiveQuery(() => localdb.settings.get("main"), [], undefined);
 
+  // Product search (our card/list style, not a native <select>)
+  const [pq, setPq] = useState("");
+  const [showPd, setShowPd] = useState(false);
   const [pid, setPid] = useState("");
-  const [qty, setQty] = useState(1);
+  const selected = products.find((x) => x.id === pid);
+  const stock = selected ? computeStock(selected.id, branchId, branchSales, branchPurch) : 0;
+  const perBox = selected?.pieces_per_box || 0;
+
+  const [box, setBox] = useState(0);
+  const [pcs, setPcs] = useState(1);
   const [price, setPrice] = useState(0);
-  const [disc, setDisc] = useState(0);
-  const [gst, setGst] = useState(0);
+  const [discType, setDiscType] = useState<DiscType>("none");
+  const [discCustom, setDiscCustom] = useState(0);
+  const [discFlat, setDiscFlat] = useState(0);
+
+  const totalQty = (Number(box) || 0) * (perBox || 0) + (Number(pcs) || 0);
+  const discountType: "percent" | "flat" | undefined = discType === "flat" ? "flat" : discType === "none" ? undefined : "percent";
+  const discountValue = discType === "custom" ? discCustom : discType === "flat" ? discFlat : discType === "none" ? 0 : Number(discType);
+
   const [cart, setCart] = useState<CartItem[]>([]);
+
+  // Customer name — dropdown of saved customers, but still free text for new ones.
   const [cust, setCust] = useState("");
-  const [pay, setPay] = useState<"cash" | "upi" | "credit">("cash");
+  const [showCustDd, setShowCustDd] = useState(false);
+  const custMatches = customers.filter((c) => c.name.toLowerCase().includes(cust.trim().toLowerCase())).slice(0, 8);
+
+  // Payment
+  const [payMode, setPayMode] = useState<"cash" | "upi" | "both" | "credit">("cash");
+  const [cashAmt, setCashAmt] = useState<number | "">("");
+  const [upiAmt, setUpiAmt] = useState<number | "">("");
+  const [paidFull, setPaidFull] = useState(true); // true = fully paid now
+  const [partialAmt, setPartialAmt] = useState<number | "">("");
   const [saving, setSaving] = useState(false);
 
-  const selected = products.find((x) => x.id === pid) ?? products[0];
-  useMemo(() => { if (selected) setPrice(selected.sale_price); }, [selected?.id]);
-  const stock = selected ? computeStock(selected.id, branchId, branchSales, branchPurch) : 0;
-  const subtotal = cart.reduce((a, c) => a + c.qty * c.price * (1 - (c.discount || 0) / 100), 0);
-  const cartTotal = subtotal * (1 + (Number(gst) || 0) / 100);
+  const pMatches = products.filter((pr) => pr.name.toLowerCase().includes(pq.toLowerCase())).slice(0, 30);
+  const selectProduct = (pr: typeof products[number]) => {
+    setPid(pr.id); setPq(pr.name); setShowPd(false);
+    setPrice(pr.sale_price); setBox(0); setPcs(1);
+  };
+
+  const { lineTotal } = computeLineTotal(totalQty, price, discountType, discountValue);
+  const cartTotal = cart.reduce((a, c) => a + computeLineTotal(c.qty, c.price, c.discountType, c.discountValue).lineTotal, 0);
 
   const today = rangeStart("today");
   const todayTotal = sum(live(branchSales).filter((s) => new Date(s.created_at).getTime() >= today), "total");
 
   const addItem = () => {
-    if (!selected) return toast("No products");
-    if (!qty || qty < 1) return toast("Enter quantity");
-    setCart((c) => {
-      const found = c.find((x) => x.product_id === selected.id && x.price === price && (x.discount || 0) === disc);
-      if (found) return c.map((x) => x === found ? { ...x, qty: x.qty + qty } : x);
-      return [...c, { product_id: selected.id, name: selected.name, qty, price, discount: disc }];
-    });
-    setQty(1); setDisc(0);
+    if (!selected) return toast("Search and select a product");
+    if (!totalQty || totalQty <= 0) return toast("Enter a quantity (box and/or pcs)");
+    setCart((c) => [...c, { product_id: selected.id, name: selected.name, qty: totalQty, price, discountType, discountValue }]);
+    setPid(""); setPq(""); setBox(0); setPcs(1); setDiscType("none"); setDiscCustom(0); setDiscFlat(0);
   };
   const removeItem = (i: number) => setCart((c) => c.filter((_, k) => k !== i));
 
+  const amountPaidNow = payMode === "credit" ? 0
+    : paidFull ? cartTotal
+    : payMode === "both" ? (Number(cashAmt) || 0) + (Number(upiAmt) || 0)
+    : Math.max(0, Number(partialAmt) || 0);
+  const dueNow = Math.max(0, cartTotal - amountPaidNow);
+
   const save = async (print: boolean) => {
     if (!cart.length) return toast("Add at least one item");
+    if (payMode === "both" && (Number(cashAmt) || 0) + (Number(upiAmt) || 0) <= 0) {
+      return toast("Enter the cash and/or UPI amount");
+    }
     setSaving(true);
-    const { billNo } = await createSaleBill(branchId, shared.profile.id, cust, pay, cart, gst);
+    // When "both" + paid in full but the cash/upi split doesn't quite add up
+    // to the total (rounding, or user only filled one field), the shortfall
+    // is booked as cash so the recorded split always reconciles with the
+    // amount actually marked as paid.
+    const splitCash = Number(cashAmt) || 0;
+    const splitUpi = Number(upiAmt) || 0;
+    const finalCash = payMode === "both" ? (paidFull ? Math.max(splitCash, cartTotal - splitUpi) : splitCash) : undefined;
+    const finalUpi = payMode === "both" ? splitUpi : undefined;
+    const { billNo, due } = await createSaleBill(branchId, shared.profile.id, cust, {
+      mode: payMode, amountPaid: amountPaidNow,
+      cashAmount: finalCash, upiAmount: finalUpi,
+    }, cart);
     setSaving(false);
-    if (print) printItemizedBill(billNo, cart.map((c) => ({ name: c.name, qty: c.qty, price: c.price, discount: c.discount })), cust.trim() || "Walk-in", pay, settings, branchName, gst);
-    toast(`Bill ${billNo} saved` + (shared.online ? "" : " offline"));
-    setCart([]); setCust(""); setPay("cash"); setGst(0); shared.onSync();
+    if (print) printItemizedBill(billNo, cart.map((c) => ({ name: c.name, qty: c.qty, price: c.price, discountType: c.discountType, discountValue: c.discountValue })), cust.trim() || "Walk-in", payMode, settings, branchName, amountPaidNow);
+    toast(`Bill ${billNo} saved` + (due > 0 ? ` — ${money(due)} due` : "") + (shared.online ? "" : " offline"));
+    setCart([]); setCust(""); setPayMode("cash"); setCashAmt(""); setUpiAmt(""); setPaidFull(true); setPartialAmt(""); shared.onSync();
   };
 
   return (
@@ -285,56 +410,131 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
         <h1 className="page-title" style={{ fontSize: 22 }}>New Bill</h1>
         <span style={{ fontSize: 13, color: "var(--muted)" }}>Today: <b style={{ color: "var(--green)" }}>{money(todayTotal)}</b></span>
       </div>
+
+      {/* Customer */}
+      <div className="card card-pad">
+        <div className="field" style={{ position: "relative" }}>
+          <label>Customer</label>
+          <input value={cust} onChange={(e) => { setCust(e.target.value); setShowCustDd(true); }}
+            onFocus={() => setShowCustDd(true)} onBlur={() => setTimeout(() => setShowCustDd(false), 150)}
+            placeholder="Walk-in (or type/select a name)" />
+          {showCustDd && custMatches.length > 0 && (
+            <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 220, overflowY: "auto", marginTop: 4 }}>
+              {custMatches.map((c) => (
+                <div key={c.id} className="row" style={{ padding: "10px 14px", cursor: "pointer" }}
+                  onMouseDown={() => { setCust(c.name); setShowCustDd(false); }}>
+                  <div><div className="main">{c.name}</div><div className="sub">{c.phone || "—"}</div></div>
+                  {c.balance_due > 0 && <span className="amt out">{money(c.balance_due)} due</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Product search */}
       <div className="card card-pad">
         <div className="form-grid">
-          <div className="field"><label>Product</label>
-            <select value={selected?.id ?? ""} onChange={(e) => { setPid(e.target.value); const pr = products.find((x) => x.id === e.target.value); if (pr) setPrice(pr.sale_price); }}>
-              {products.map((pr) => <option key={pr.id} value={pr.id}>{pr.name} — {money(pr.sale_price)}/{pr.unit}</option>)}
-            </select>
+          <div className="field" style={{ position: "relative" }}>
+            <label>Product</label>
+            <input className="search" style={{ width: "100%" }} value={pq}
+              onChange={(e) => { setPq(e.target.value); setShowPd(true); setPid(""); }}
+              onFocus={() => setShowPd(true)} onBlur={() => setTimeout(() => setShowPd(false), 150)}
+              placeholder="Search products…" />
+            {showPd && pMatches.length > 0 && (
+              <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 260, overflowY: "auto", marginTop: 4 }}>
+                {pMatches.map((pr) => (
+                  <div key={pr.id} className="row" style={{ padding: "10px 14px", cursor: "pointer" }} onMouseDown={() => selectProduct(pr)}>
+                    <div><div className="main">{pr.name}</div><div className="sub">{money(pr.sale_price)}/{pr.unit}{pr.pieces_per_box ? ` · 1 box = ${pr.pieces_per_box} pcs` : ""}</div></div>
+                  </div>
+                ))}
+              </div>
+            )}
             {selected && <div className="stock-hint">In stock: <b className={stock <= (selected.low_stock_at ?? 5) ? "low" : ""}>{stock} {selected.unit}</b></div>}
           </div>
-          <div className="qty-row" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
-            <div className="field"><label>Quantity</label><input type="number" inputMode="numeric" min={1} value={qty} onChange={(e) => setQty(+e.target.value)} /></div>
-            <div className="field"><label>Price each</label><input type="number" inputMode="numeric" value={price} onChange={(e) => setPrice(+e.target.value)} /></div>
-            <div className="field"><label>Disc %</label><input type="number" inputMode="numeric" value={disc} onChange={(e) => setDisc(+e.target.value)} /></div>
-          </div>
-          <button className="btn ghost" onClick={addItem}>+ Add item to bill</button>
+
+          {selected && (
+            <>
+              <div className="qty-row" style={{ gridTemplateColumns: perBox ? "1fr 1fr" : "1fr" }}>
+                {perBox > 0 && (
+                  <div className="field"><label>Box (1 box = {perBox} pcs)</label><input type="number" inputMode="numeric" min={0} value={box} onChange={(e) => setBox(+e.target.value)} /></div>
+                )}
+                <div className="field"><label>Pcs</label><input type="number" inputMode="numeric" min={0} value={pcs} onChange={(e) => setPcs(+e.target.value)} /></div>
+              </div>
+              <div className="qty-row">
+                <div className="field"><label>Price each</label><input type="number" inputMode="numeric" value={price} onChange={(e) => setPrice(+e.target.value)} /></div>
+                <div className="field"><label>Discount</label>
+                  <select value={discType} onChange={(e) => setDiscType(e.target.value as DiscType)}>
+                    <option value="none">None</option>
+                    <option value="5">5%</option>
+                    <option value="10">10%</option>
+                    <option value="custom">Custom %</option>
+                    <option value="flat">Flat ₹</option>
+                  </select>
+                </div>
+              </div>
+              {discType === "custom" && <div className="field"><label>Custom discount %</label><input type="number" inputMode="numeric" value={discCustom} onChange={(e) => setDiscCustom(+e.target.value)} /></div>}
+              {discType === "flat" && <div className="field"><label>Flat discount ₹</label><input type="number" inputMode="numeric" value={discFlat} onChange={(e) => setDiscFlat(+e.target.value)} /></div>}
+              <div style={{ fontSize: 13, color: "var(--muted)" }}>Qty {totalQty || 0} · Line total <b style={{ color: "var(--text)" }}>{money(lineTotal)}</b></div>
+              <button className="btn ghost" onClick={addItem}>+ Add item to bill</button>
+            </>
+          )}
         </div>
       </div>
 
       <div className="card">
         <div className="card-head"><h3>Bill items ({cart.length})</h3><b>{money(cartTotal)}</b></div>
         <div className="card-pad" style={{ paddingTop: 6 }}>
-          {cart.length ? cart.map((c, i) => (
-            <div className="row" key={i}><div><div className="main">{c.name} × {c.qty}</div><div className="sub">{money(c.price)} each{c.discount ? ` · ${c.discount}% off` : ""}</div></div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className="amt in">{money(c.qty * c.price * (1 - (c.discount || 0) / 100))}</div><button className="del-btn" onClick={() => removeItem(i)}>✕</button></div></div>
-          )) : <div className="empty">No items yet. Add products above.</div>}
+          {cart.length ? cart.map((c, i) => {
+            const { lineTotal: lt, discountAmt } = computeLineTotal(c.qty, c.price, c.discountType, c.discountValue);
+            return (
+              <div className="row" key={i}><div><div className="main">{c.name} × {c.qty}</div>
+                <div className="sub">{money(c.price)} each{discountAmt ? ` · ${c.discountType === "flat" ? "-" + money(discountAmt) : c.discountValue + "% off"}` : ""}</div></div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className="amt in">{money(lt)}</div><button className="del-btn" onClick={() => removeItem(i)}>✕</button></div></div>
+            );
+          }) : <div className="empty">No items yet. Search and add a product above.</div>}
         </div>
       </div>
 
       {cart.length > 0 && (
         <div className="card card-pad">
           <div className="form-grid">
-            <div className="field"><label>Customer (optional)</label>
-              <input list="cust-list" value={cust} onChange={(e) => setCust(e.target.value)} placeholder="Walk-in" />
-              <datalist id="cust-list">{customers.map((c) => <option key={c.id} value={c.name} />)}</datalist>
-            </div>
-            <div className="qty-row">
-              <div className="field"><label>GST %</label><input type="number" inputMode="numeric" value={gst} onChange={(e) => setGst(+e.target.value)} placeholder="0" /></div>
-              <div className="field" style={{ display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
-                <div style={{ fontSize: 13, color: "var(--muted)" }}>Subtotal {money(subtotal)}{gst ? ` + GST ${gst}%` : ""}</div>
-              </div>
-            </div>
-            <div className="field"><label>Payment</label>
+            <div className="field"><label>Payment mode</label>
               <div className="pay-select">
-                {(["cash", "upi", "credit"] as const).map((m) => (
-                  <button key={m} className={"pay-opt" + (pay === m ? " active" : "")} onClick={() => setPay(m)}>{m === "credit" ? "Credit / Udhaar" : m.toUpperCase()}</button>
+                {(["cash", "upi", "both", "credit"] as const).map((m) => (
+                  <button key={m} className={"pay-opt" + (payMode === m ? " active" : "")} onClick={() => setPayMode(m)}>{m === "credit" ? "Credit" : m === "both" ? "Cash+UPI" : m.toUpperCase()}</button>
                 ))}
               </div>
             </div>
+
+            {payMode !== "credit" && (
+              <label className="row" style={{ padding: "6px 0", cursor: "pointer" }}>
+                <span className="main" style={{ fontSize: 14 }}>Customer paid the full amount now</span>
+                <input type="checkbox" checked={paidFull} onChange={(e) => setPaidFull(e.target.checked)} style={{ width: 20, height: 20 }} />
+              </label>
+            )}
+
+            {payMode === "both" && (
+              <div className="qty-row">
+                <div className="field"><label>Cash ₹</label><input type="number" inputMode="numeric" value={cashAmt} onChange={(e) => setCashAmt(e.target.value === "" ? "" : +e.target.value)} /></div>
+                <div className="field"><label>UPI ₹</label><input type="number" inputMode="numeric" value={upiAmt} onChange={(e) => setUpiAmt(e.target.value === "" ? "" : +e.target.value)} /></div>
+              </div>
+            )}
+
+            {payMode !== "credit" && !paidFull && payMode !== "both" && (
+              <div className="field"><label>Amount received now (partial)</label>
+                <input type="number" inputMode="numeric" value={partialAmt} onChange={(e) => setPartialAmt(e.target.value === "" ? "" : +e.target.value)} placeholder="0" />
+              </div>
+            )}
+            {payMode !== "credit" && !paidFull && payMode === "both" && (
+              <div style={{ fontSize: 12.5, color: "var(--muted)" }}>Cash + UPI entered above is treated as the partial amount received now.</div>
+            )}
+
             <div className="total-preview">{money(cartTotal)}</div>
+            {dueNow > 0 && <div style={{ textAlign: "center", color: "var(--red)", fontWeight: 700, fontSize: 14 }}>Due after this bill: {money(dueNow)}</div>}
+
             <div className="btn-row">
-              <button className="btn ghost" onClick={() => save(false)} disabled={saving}>Save</button>
+              <button className="btn ghost" onClick={() => save(false)} disabled={saving}>Save Bill</button>
               <button className="btn" onClick={() => save(true)} disabled={saving}>Save &amp; Print</button>
             </div>
           </div>
