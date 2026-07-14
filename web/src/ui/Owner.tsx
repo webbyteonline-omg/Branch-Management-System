@@ -17,7 +17,7 @@ import { supabase } from "../lib/supabase";
 import { BarChart, Donut } from "./Charts";
 import { AddCustomerModal, AddExpenseModal, AddPurchaseModal } from "./OwnerAdd";
 
-type View = "dashboard" | "branch" | "customers" | "purchases" | "inventory" | "saleshistory" | "daybook" | "reports" | "settings";
+type View = "dashboard" | "branch" | "customers" | "ledger" | "purchases" | "inventory" | "products" | "saleshistory" | "daybook" | "reports" | "settings";
 type ORange = Range | "custom";
 const between = (rows: any[], from: number, to: number) => rows.filter((r) => { const t = new Date(r.created_at).getTime(); return t >= from && t <= to; });
 const inRange = (rows: any[], from: number) => rows.filter((r) => new Date(r.created_at).getTime() >= from);
@@ -74,10 +74,12 @@ export function Owner(p: SharedProps) {
     ["dashboard", "Dashboard", "dashboard"],
     ["branch:seppa", "Seppa Branch", "branch"],
     ["branch:dirang", "Dirang Branch", "pin"],
-    ["customers", "Customers", "customers"],
-    ["saleshistory", "Sales / Bills", "sales"],
+    ["saleshistory", "Sell / Bills", "sales"],
     ["purchases", "Purchases", "cart"],
-    ["inventory", "Inventory", "book"],
+    ["ledger", "Ledger", "book"],
+    ["customers", "Customers", "customers"],
+    ["inventory", "Stock", "reports"],
+    ["products", "Products", "bill"],
     ["daybook", "Day Book", "day"],
     ["reports", "Reports", "reports"],
     ["settings", "Settings", "settings"],
@@ -131,12 +133,14 @@ export function Owner(p: SharedProps) {
           {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go }} />}
           {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync: p.onSync }} />}
           {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} branches={branches} onSync={p.onSync} />}
+          {view === "ledger" && <LedgerPage custAll={custAll} bmap={bmap} onSync={p.onSync} />}
           {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} products={products} userId={p.profile.id} onSync={p.onSync} />}
           {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
+          {view === "products" && <ProductsPage prodAll={prodAll} online={p.online} branches={branches} onSync={p.onSync} />}
           {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} settings={settings} branches={branches} staffMap={staffMap} />}
           {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
           {view === "reports" && <ReportsPage rSales={rSales} range={rangeText} staffMap={staffMap} />}
-          {view === "settings" && <SettingsPage prodAll={prodAll} online={p.online} settings={settings} onSync={p.onSync} branches={branches} />}
+          {view === "settings" && <SettingsPage settings={settings} onSync={p.onSync} branches={branches} />}
         </div>
       </div>
     </div>
@@ -359,6 +363,117 @@ function CustomersPage({ custAll, bmap, branches, onSync }: any) {
       {ledger && <LedgerModal branchId={ledger.branchId} name={ledger.name} onClose={() => setLedger(null)} onSync={onSync} />}
       {editC && <EditCustomerModal customer={editC} onClose={() => setEditC(null)} onSync={onSync} />}
       {addC && <AddCustomerModal branches={branches} onClose={() => setAddC(false)} onSync={onSync} />}</>
+  );
+}
+
+/* ---------- ledger (all customers, head-office wide) ---------- */
+function LedgerPage({ custAll, bmap, onSync }: any) {
+  const [q, setQ] = useState("");
+  const [ledger, setLedger] = useState<{ branchId: string; name: string } | null>(null);
+  let rows = live(custAll);
+  if (q.trim()) rows = rows.filter((c: any) => (c.name + (c.phone || "")).toLowerCase().includes(q.toLowerCase()));
+  rows = [...rows].sort((a: any, b: any) => b.balance_due - a.balance_due);
+  const totalDue = sum(rows as any[], "balance_due" as any);
+  const withDue = rows.filter((c: any) => c.balance_due > 0).length;
+
+  return (
+    <><h1 className="page-title">Ledger</h1><p className="page-sub">Customer balances (udhaar) across both branches.</p>
+      <div className="stats" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+        <Stat label="Customers" value={String(rows.length)} delta={{ cls: "flat", txt: "all branches" }} icon="customers" />
+        <Stat label="With dues" value={String(withDue)} delta={{ cls: withDue > 0 ? "down" : "flat", txt: "need follow-up" }} icon="bill" />
+        <Stat label="Total outstanding" value={money(totalDue)} delta={{ cls: totalDue > 0 ? "down" : "up", txt: "across ledger" }} icon="book" />
+      </div>
+      <div className="card">
+        <div className="card-head">
+          <h3>Customer balances</h3>
+          <input className="search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Name</th><th>Phone</th><th>Branch</th><th className="r">Balance due</th><th className="r"></th></tr></thead>
+          <tbody>{rows.length ? rows.map((c: any) => (
+            <tr key={c.id}><td>{c.name}</td><td>{c.phone}</td><td><span className="b-tag">{bmap[c.branch_id]}</span></td>
+              <td className={"r amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) : "Clear"}</td>
+              <td className="r"><button className="edit-btn" onClick={() => setLedger({ branchId: c.branch_id, name: c.name })}>View ledger</button></td></tr>
+          )) : <tr><td colSpan={5}><div className="empty">No customers yet.</div></td></tr>}</tbody>
+        </table></div>
+      </div>
+      {ledger && <LedgerModal branchId={ledger.branchId} name={ledger.name} onClose={() => setLedger(null)} onSync={onSync} />}</>
+  );
+}
+
+/* ---------- products (catalog & pricing) ---------- */
+function ProductsPage({ prodAll, online, branches, onSync }: any) {
+  const [edit, setEdit] = useState<Partial<Product> | null>(null);
+  const [showDeleted, setShowDeleted] = useState(false);
+  const [q, setQ] = useState("");
+  const blank: Partial<Product> = { name: "", unit: "pcs", sale_price: 0, cost_price: 0, low_stock_at: 5 };
+  let rows: Product[] = showDeleted ? deletedOnly(prodAll) : live(prodAll);
+  if (q.trim()) rows = rows.filter((pr) => pr.name.toLowerCase().includes(q.toLowerCase()));
+
+  const save = async () => {
+    if (!edit?.name?.trim()) return toast("Enter a product name");
+    const ok = await saveProduct(edit as any, online);
+    if (!ok) return toast(online ? "Could not save" : "Connect to internet to edit products");
+    toast("Product saved"); setEdit(null);
+  };
+  const delProd = async (pr: Product) => { if (confirmDelete("product")) { await softDelete("products" as any, pr.id); toast("Deleted"); onSync(); } };
+  const restoreProd = async (pr: Product) => { await restoreRow("products" as any, pr.id); toast("Restored"); onSync(); };
+  const exportCsv = () => downloadExcel("products", ["Name", "Branch", "Unit", "Cost", "Sale price", "Low stock at"],
+    rows.map((pr) => [pr.name, pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All", pr.unit, pr.cost_price, pr.sale_price, pr.low_stock_at ?? 5]));
+
+  return (
+    <><h1 className="page-title">Products</h1><p className="page-sub">Catalog, pricing & branch assignment.</p>
+      <div className="card">
+        <div className="card-head"><h3>{rows.length} {showDeleted ? "deleted" : "product" + (rows.length === 1 ? "" : "s")}</h3>
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+            <input className="search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
+            <button className="edit-btn" onClick={exportCsv}>Export Excel</button>
+            <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
+            {!showDeleted && <button className="add-btn" onClick={() => setEdit({ ...blank })}>+ Add product</button>}
+          </div>
+        </div>
+        <div className="table-wrap"><table>
+          <thead><tr><th>Product</th><th>Branch</th><th>Unit</th><th className="r">Cost</th><th className="r">Sale price</th><th className="r">Low ≤</th><th className="r"></th></tr></thead>
+          <tbody>
+            {rows.length ? rows.map((pr: Product) => (
+              <tr key={pr.id}>
+                <td>{pr.name}</td>
+                <td><span className="b-tag">{pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All"}</span></td>
+                <td>{pr.unit}</td>
+                <td className="r">{money(pr.cost_price)}</td>
+                <td className="r amt in">{money(pr.sale_price)}</td>
+                <td className="r">{pr.low_stock_at ?? 5}</td>
+                <td className="r">{showDeleted
+                  ? <button className="pay-btn" onClick={() => restoreProd(pr)}>Restore</button>
+                  : <><button className="edit-btn" onClick={() => setEdit({ ...pr })}>Edit</button> <button className="del-btn" onClick={() => delProd(pr)}>✕</button></>}</td>
+              </tr>
+            )) : <tr><td colSpan={7}><div className="empty">Nothing here.</div></td></tr>}
+          </tbody>
+        </table></div>
+      </div>
+      {edit && (
+        <Modal title={edit.id ? "Edit product" : "Add product"} onClose={() => setEdit(null)}>
+          <div className="form-grid">
+            <div className="field"><label>Name</label><input value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="Product name" /></div>
+            <div className="field"><label>Branch (which branch sells this)</label>
+              <select value={edit.branch_id ?? ""} onChange={(e) => setEdit({ ...edit, branch_id: e.target.value || null })}>
+                <option value="">All branches</option>
+                {branches.filter((b: any) => b.id !== "ho").map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+            <div className="qty-row">
+              <div className="field"><label>Unit</label><input value={edit.unit ?? ""} onChange={(e) => setEdit({ ...edit, unit: e.target.value })} placeholder="box / kg" /></div>
+              <div className="field"><label>Low-stock alert ≤</label><input type="number" inputMode="numeric" value={edit.low_stock_at ?? 5} onChange={(e) => setEdit({ ...edit, low_stock_at: +e.target.value })} /></div>
+            </div>
+            <div className="qty-row">
+              <div className="field"><label>Cost price</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
+              <div className="field"><label>Sale price</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
+            </div>
+            <div className="btn-row"><button className="btn ghost" onClick={() => setEdit(null)}>Cancel</button><button className="btn" onClick={save}>Save product</button></div>
+          </div>
+        </Modal>
+      )}
+    </>
   );
 }
 
@@ -610,30 +725,18 @@ function ReportsPage({ rSales, range, staffMap }: any) {
 }
 
 /* ---------- settings ---------- */
-function SettingsPage({ prodAll, online, settings, onSync, branches }: any) {
-  const [edit, setEdit] = useState<Partial<Product> | null>(null);
-  const [showDeleted, setShowDeleted] = useState(false);
+function SettingsPage({ settings, onSync, branches }: any) {
   const [co, setCo] = useState<Settings>(settings ?? { id: "main", company: "", address: "", phone: "", gstin: "", footer: "" });
   const [showPw, setShowPw] = useState(false);
   useEffect(() => { if (settings) setCo(settings); }, [settings]);
-  const blank: Partial<Product> = { name: "", unit: "pcs", sale_price: 0, cost_price: 0, low_stock_at: 5 };
-  const rows: Product[] = showDeleted ? deletedOnly(prodAll) : live(prodAll);
-
-  const save = async () => {
-    if (!edit?.name?.trim()) return toast("Enter a product name");
-    const ok = await saveProduct(edit as any, online);
-    if (!ok) return toast(online ? "Could not save" : "Connect to internet to edit products");
-    toast("Product saved"); setEdit(null);
-  };
-  const delProd = async (pr: Product) => { if (confirmDelete("product")) { await softDelete("products" as any, pr.id); toast("Deleted"); onSync(); } };
-  const restoreProd = async (pr: Product) => { await restoreRow("products" as any, pr.id); toast("Restored"); onSync(); };
   const saveCo = async () => {
-    const ok = await saveSettings({ ...co, id: "main" }, online);
-    toast(ok ? "Company profile saved" : online ? "Could not save" : "Connect to internet");
+    const ok = await saveSettings({ ...co, id: "main" }, true);
+    toast(ok ? "Company profile saved" : "Could not save");
+    onSync();
   };
 
   return (
-    <><h1 className="page-title">Settings</h1><p className="page-sub">Company, products, staff & system.</p>
+    <><h1 className="page-title">Settings</h1><p className="page-sub">Company profile, staff & system.</p>
 
       <div className="card card-pad">
         <h3 style={{ margin: "0 0 14px" }}>Company profile <span style={{ color: "var(--faint)", fontWeight: 400, fontSize: 12 }}>(shown on printed invoices)</span></h3>
@@ -649,33 +752,6 @@ function SettingsPage({ prodAll, online, settings, onSync, branches }: any) {
           <div className="field"><label>Invoice footer</label><input value={co.footer ?? ""} onChange={(e) => setCo({ ...co, footer: e.target.value })} placeholder="Thank you!" /></div>
           <div><button className="btn" style={{ width: "auto", padding: "11px 20px" }} onClick={saveCo}>Save company profile</button></div>
         </div>
-      </div>
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-head"><h3>Products & Prices</h3>
-          <div style={{ display: "flex", gap: 10 }}>
-            <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
-            {!showDeleted && <button className="add-btn" onClick={() => setEdit({ ...blank })}>+ Add product</button>}
-          </div>
-        </div>
-        <div className="table-wrap"><table>
-          <thead><tr><th>Product</th><th>Branch</th><th>Unit</th><th className="r">Cost</th><th className="r">Sale price</th><th className="r">Low ≤</th><th className="r"></th></tr></thead>
-          <tbody>
-            {rows.length ? rows.map((pr: Product) => (
-              <tr key={pr.id}>
-                <td>{pr.name}</td>
-                <td><span className="b-tag">{pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All"}</span></td>
-                <td>{pr.unit}</td>
-                <td className="r">{money(pr.cost_price)}</td>
-                <td className="r amt in">{money(pr.sale_price)}</td>
-                <td className="r">{pr.low_stock_at ?? 5}</td>
-                <td className="r">{showDeleted
-                  ? <button className="pay-btn" onClick={() => restoreProd(pr)}>Restore</button>
-                  : <><button className="edit-btn" onClick={() => setEdit({ ...pr })}>Edit</button> <button className="del-btn" onClick={() => delProd(pr)}>✕</button></>}</td>
-              </tr>
-            )) : <tr><td colSpan={7}><div className="empty">Nothing here.</div></td></tr>}
-          </tbody>
-        </table></div>
       </div>
 
       <div className="card card-pad" style={{ marginTop: 16 }}>
@@ -695,28 +771,6 @@ function SettingsPage({ prodAll, online, settings, onSync, branches }: any) {
       </div>
 
       {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
-      {edit && (
-        <Modal title={edit.id ? "Edit product" : "Add product"} onClose={() => setEdit(null)}>
-          <div className="form-grid">
-            <div className="field"><label>Name</label><input value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="Product name" /></div>
-            <div className="field"><label>Branch (which branch sells this)</label>
-              <select value={edit.branch_id ?? ""} onChange={(e) => setEdit({ ...edit, branch_id: e.target.value || null })}>
-                <option value="">All branches</option>
-                {branches.filter((b: any) => b.id !== "ho").map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}
-              </select>
-            </div>
-            <div className="qty-row">
-              <div className="field"><label>Unit</label><input value={edit.unit ?? ""} onChange={(e) => setEdit({ ...edit, unit: e.target.value })} placeholder="box / kg" /></div>
-              <div className="field"><label>Low-stock alert ≤</label><input type="number" inputMode="numeric" value={edit.low_stock_at ?? 5} onChange={(e) => setEdit({ ...edit, low_stock_at: +e.target.value })} /></div>
-            </div>
-            <div className="qty-row">
-              <div className="field"><label>Cost price</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
-              <div className="field"><label>Sale price</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
-            </div>
-            <div className="btn-row"><button className="btn ghost" onClick={() => setEdit(null)}>Cancel</button><button className="btn" onClick={save}>Save product</button></div>
-          </div>
-        </Modal>
-      )}
     </>
   );
 }

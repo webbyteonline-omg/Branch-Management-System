@@ -15,26 +15,38 @@ import type { Purchase, Bill as BillT } from "../lib/types";
 
 const confirmDel = (what: string) => window.confirm(`Delete this ${what}? It can be restored by the owner.`);
 
-type Tab = "sale" | "purchase" | "bills" | "customers" | "daybook";
+type Tab = "dashboard" | "sale" | "purchase" | "bills" | "customers" | "ledger" | "stock" | "daybook";
 
 export function Staff(p: SharedProps) {
-  const [tab, setTab] = useState<Tab>("sale");
+  const [tab, setTab] = useState<Tab>("dashboard");
   const [showAccount, setShowAccount] = useState(false);
   const [showPw, setShowPw] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const branchId = p.profile.branch_id!;
   const branches = useLiveQuery(() => localdb.branches.toArray(), [], []);
   const branchName = branches.find((b) => b.id === branchId)?.name ?? "My Branch";
   const pending = useLiveQuery(() => pendingCount(), [], 0) ?? 0;
 
+  // Bottom bar: the 5 most-used. Everything (incl. these) also lives in the hamburger menu.
   const tabs: [Tab, string, string][] = [
-    ["sale", "Billing", "sales"], ["purchase", "Purchase", "cart"],
-    ["bills", "Bills", "bill"], ["customers", "Customers", "customers"], ["daybook", "Day Book", "day"],
+    ["dashboard", "Home", "dashboard"], ["sale", "Billing", "sales"], ["purchase", "Purchase", "cart"],
+    ["bills", "Bills", "bill"], ["customers", "Customers", "customers"],
   ];
+  const menuItems: [Tab, string, string][] = [
+    ["dashboard", "Dashboard", "dashboard"], ["sale", "Billing / Sell", "sales"], ["purchase", "Purchase", "cart"],
+    ["ledger", "Ledger", "book"], ["customers", "Customers", "customers"], ["stock", "Stock", "reports"],
+    ["bills", "Bills / Udhaar", "bill"], ["daybook", "Day Book", "day"],
+  ];
+
+  const go = (t: Tab) => { setTab(t); setShowMenu(false); };
 
   return (
     <>
       <div className="mobile-top">
-        <div className="who"><b>{p.profile.name}</b><span>{branchName}</span></div>
+        <div className="actions">
+          <button className="hbtn" style={{ width: 34, height: 34 }} onClick={() => setShowMenu(true)}><Icon name="menu" size={18} /></button>
+        </div>
+        <div className="who" style={{ textAlign: "center" }}><b>{p.profile.name}</b><span>{branchName}</span></div>
         <div className="actions">
           <span className={"sync-pill " + (pending > 0 ? "pending" : "ok")}><span className="dot" />{pending > 0 ? pending : "Synced"}</span>
           <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
@@ -42,19 +54,36 @@ export function Staff(p: SharedProps) {
         </div>
       </div>
       <div className="m-content">
+        {tab === "dashboard" && <StaffDashboard branchId={branchId} branchName={branchName} shared={p} go={go} />}
         {tab === "sale" && <BillingForm branchId={branchId} shared={p} branchName={branchName} />}
         {tab === "purchase" && <PurchaseForm branchId={branchId} shared={p} />}
         {tab === "bills" && <Bills branchId={branchId} shared={p} branchName={branchName} />}
         {tab === "customers" && <Customers branchId={branchId} shared={p} />}
+        {tab === "ledger" && <StaffLedger branchId={branchId} shared={p} />}
+        {tab === "stock" && <StaffStock branchId={branchId} />}
         {tab === "daybook" && <Daybook branchId={branchId} shared={p} />}
       </div>
       <div className="tabbar">
         {tabs.map(([t, label, ic]) => (
-          <button key={t} className={"tab" + (tab === t ? " active" : "")} onClick={() => setTab(t)}>
+          <button key={t} className={"tab" + (tab === t ? " active" : "")} onClick={() => go(t)}>
             <Icon name={ic} size={22} /><span>{label}</span>
           </button>
         ))}
       </div>
+      {showMenu && (
+        <div className="modal-scrim" onClick={() => setShowMenu(false)}>
+          <div className="modal" style={{ maxWidth: 320, alignSelf: "flex-start", marginTop: 0, borderRadius: "0 14px 14px 0", height: "100vh" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head"><h3>Menu</h3><button className="hbtn" style={{ width: 30, height: 30 }} onClick={() => setShowMenu(false)}>✕</button></div>
+            <div className="modal-body" style={{ padding: 10 }}>
+              {menuItems.map(([t, label, ic]) => (
+                <button key={t} className={"nav-item" + (tab === t ? " active" : "")} onClick={() => go(t)}>
+                  <Icon name={ic} size={19} /><span>{label}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {showAccount && (
         <Modal title="Account" onClose={() => setShowAccount(false)}>
           <div className="form-grid">
@@ -65,6 +94,138 @@ export function Staff(p: SharedProps) {
         </Modal>
       )}
       {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
+    </>
+  );
+}
+
+/* ---------- Dashboard ---------- */
+function StaffDashboard({ branchId, branchName, shared, go }: { branchId: string; branchName: string; shared: SharedProps; go: (t: Tab) => void }) {
+  const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const purch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const expenses = live(useLiveQuery(() => localdb.expenses.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const bills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
+
+  const today = rangeStart("today");
+  const todaySales = sales.filter((s) => new Date(s.created_at).getTime() >= today);
+  const todayPurch = purch.filter((s) => new Date(s.created_at).getTime() >= today);
+  const todayExp = expenses.filter((s) => new Date(s.created_at).getTime() >= today);
+  const inT = sum(todaySales, "total");
+  const outT = sum(todayPurch, "total") + sum(todayExp, "amount");
+  const due = sum(bills.filter((b) => b.status === "unpaid"), "due_amount");
+
+  const lowStock = products.filter((pr) => computeStock(pr.id, branchId, sales, purch) <= (pr.low_stock_at ?? 5));
+
+  const recent = [
+    ...sales.map((s) => ({ id: s.id, t: s.created_at, label: `Sale · ${s.product_name} × ${s.qty}`, amt: s.total, dir: "in" as const })),
+    ...purch.map((x) => ({ id: x.id, t: x.created_at, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out" as const })),
+  ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 8);
+
+  return (
+    <>
+      <h1 className="page-title" style={{ fontSize: 22 }}>{branchName}</h1>
+      <p className="page-sub" style={{ marginBottom: 14 }}>Today's overview</p>
+      <div className="m-stats">
+        <div className="stat"><div className="label">Sales today</div><div className="value" style={{ color: "var(--green)", fontSize: 18 }}>{money(inT)}</div></div>
+        <div className="stat"><div className="label">Spent today</div><div className="value" style={{ color: "var(--red)", fontSize: 18 }}>{money(outT)}</div></div>
+        <div className="stat"><div className="label">Net today</div><div className="value" style={{ fontSize: 18 }}>{money(inT - outT)}</div></div>
+        <div className="stat"><div className="label">Udhaar due</div><div className="value" style={{ fontSize: 18, color: due > 0 ? "var(--red)" : "var(--green)" }}>{money(due)}</div></div>
+      </div>
+
+      {lowStock.length > 0 && (
+        <div className="card alert-card" style={{ marginBottom: 16 }}>
+          <div className="card-head"><h3>⚠ Low stock ({lowStock.length})</h3><button className="edit-btn" onClick={() => go("stock")}>View stock</button></div>
+          <div className="card-pad" style={{ paddingTop: 6 }}>
+            <div className="chips">
+              {lowStock.slice(0, 8).map((pr) => <span key={pr.id} className="chip">{pr.name} · <b className="stock low" style={{ padding: 0, background: "none" }}>{computeStock(pr.id, branchId, sales, purch)}</b></span>)}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <div className="card-head"><h3>Recent activity</h3></div>
+        <div className="card-pad" style={{ paddingTop: 6 }}>
+          {recent.length ? recent.map((i) => (
+            <div className="row" key={i.id}><div><div className="main">{i.label}</div><div className="sub">{dateStr(i.t)} · {timeStr(i.t)}</div></div>
+              <div className={"amt " + i.dir}>{i.dir === "in" ? "+" : "−"}{money(i.amt)}</div></div>
+          )) : <div className="empty">No activity yet today.</div>}
+        </div>
+      </div>
+
+      <div className="btn-row" style={{ marginTop: 16 }}>
+        <button className="btn ghost" onClick={() => go("sale")}>+ New Bill</button>
+        <button className="btn ghost" onClick={() => go("purchase")}>+ Purchase</button>
+      </div>
+      <div style={{ height: 8 }} />
+      {!shared && null}
+    </>
+  );
+}
+
+/* ---------- Stock (with Products) ---------- */
+function StaffStock({ branchId }: { branchId: string }) {
+  const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
+  const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const purch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const [q, setQ] = useState("");
+
+  const rows = products
+    .map((pr) => ({ ...pr, stock: computeStock(pr.id, branchId, sales, purch) }))
+    .filter((pr) => pr.name.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const lowCount = rows.filter((r) => r.stock <= (r.low_stock_at ?? 5)).length;
+
+  return (
+    <>
+      <h1 className="page-title" style={{ fontSize: 22 }}>Stock</h1>
+      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr" }}>
+        <div className="stat"><div className="label">Products</div><div className="value" style={{ fontSize: 18 }}>{rows.length}</div></div>
+        <div className="stat"><div className="label">Low stock</div><div className="value" style={{ fontSize: 18, color: lowCount > 0 ? "var(--red)" : "var(--green)" }}>{lowCount}</div></div>
+      </div>
+      <div className="card">
+        <div className="card-head"><h3>Inventory</h3><input className="search" placeholder="Search product…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+        <div className="card-pad" style={{ paddingTop: 6 }}>
+          {rows.length ? rows.map((pr) => (
+            <div className="row" key={pr.id}>
+              <div><div className="main">{pr.name}</div><div className="sub">{pr.unit} · sale {money(pr.sale_price)}</div></div>
+              <div className={"stock" + (pr.stock <= (pr.low_stock_at ?? 5) ? " low" : "")}>{pr.stock} {pr.unit}</div>
+            </div>
+          )) : <div className="empty">No products for this branch yet.</div>}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ---------- Ledger (all customers) ---------- */
+function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedProps }) {
+  const cust = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const [q, setQ] = useState("");
+  const [ledger, setLedger] = useState<string | null>(null);
+  const rows = cust.filter((c) => c.name.toLowerCase().includes(q.toLowerCase()))
+    .sort((a, b) => b.balance_due - a.balance_due);
+  const totalDue = sum(rows, "balance_due");
+
+  return (
+    <>
+      <h1 className="page-title" style={{ fontSize: 22 }}>Ledger</h1>
+      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr" }}>
+        <div className="stat"><div className="label">Customers</div><div className="value" style={{ fontSize: 18 }}>{rows.length}</div></div>
+        <div className="stat"><div className="label">Total outstanding</div><div className="value" style={{ fontSize: 18, color: totalDue > 0 ? "var(--red)" : "var(--green)" }}>{money(totalDue)}</div></div>
+      </div>
+      <div className="card">
+        <div className="card-head"><h3>Customer balances</h3><input className="search" placeholder="Search customer…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+        <div className="card-pad" style={{ paddingTop: 6 }}>
+          {rows.length ? rows.map((c) => (
+            <div className="row" key={c.id} style={{ cursor: "pointer" }} onClick={() => setLedger(c.name)}>
+              <div><div className="main">{c.name}</div><div className="sub">{c.phone || "—"} · tap for ledger</div></div>
+              <div className={"amt " + (c.balance_due > 0 ? "out" : "in")}>{c.balance_due > 0 ? money(c.balance_due) + " due" : "Clear"}</div>
+            </div>
+          )) : <div className="empty">No customers yet.</div>}
+        </div>
+      </div>
+      {ledger && <LedgerModal branchId={branchId} name={ledger} onClose={() => setLedger(null)} onSync={shared.onSync} />}
     </>
   );
 }
