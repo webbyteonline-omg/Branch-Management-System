@@ -5,11 +5,9 @@ import { Icon } from "../lib/icons";
 import { money, dateStr, timeStr, rangeStart } from "../lib/format";
 import { toast } from "./Toast";
 import { Modal } from "./Modal";
-import { ChangePasswordModal } from "./Account";
 import { LedgerModal } from "./Ledger";
 import { EditCustomerModal, EditEntryModal, EditBillModal } from "./Edits";
 import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, computeLineTotal, settleCustomerDues, type CartItem } from "../lib/writes";
-import { printInvoice, printItemizedBill } from "../lib/invoice";
 import { sum, live, computeStock, productsForBranch, type SharedProps } from "./shared";
 import { BarChart } from "./Charts";
 import type { Purchase, Bill as BillT } from "../lib/types";
@@ -20,7 +18,6 @@ type Tab = "dashboard" | "sale" | "purchase" | "bills" | "customers" | "ledger" 
 
 export function Staff(p: SharedProps) {
   const [tab, setTab] = useState<Tab>("dashboard");
-  const [showPw, setShowPw] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const branchId = p.profile.branch_id!;
   const branches = useLiveQuery(() => localdb.branches.toArray(), [], []);
@@ -49,17 +46,13 @@ export function Staff(p: SharedProps) {
       <div className="mobile-top" style={{ background: "var(--surface)" }}>
         <div className="actions">
           <button className="icon-btn" onClick={() => setShowMenu(true)}><Icon name="menu" size={22} /></button>
-          <div>
-            <b style={{ color: "var(--accent)", fontSize: 17, fontWeight: 800, display: "block", lineHeight: 1.1 }}>POS Central</b>
-            <span style={{ fontSize: 11.5, color: "var(--muted)" }}>{branchName} • {p.profile.name}</span>
-          </div>
+          <b style={{ fontSize: 15.5, fontWeight: 700, lineHeight: 1.1 }}>{branchName}</b>
         </div>
         <div className="actions">
-          <span className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} title={p.syncError || undefined}>
-            <span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? pending : "Synced"}
-          </span>
-          <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
-          <button className="icon-btn" onClick={p.onSync} title="Refresh"><Icon name="sync" size={20} /></button>
+          <button className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")}
+            style={{ border: "none" }} onClick={p.onSync} title={p.syncError || "Tap to refresh"}>
+            <span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? `${pending} pending` : "Synced"}
+          </button>
         </div>
       </div>
       {p.syncError && (
@@ -93,20 +86,20 @@ export function Staff(p: SharedProps) {
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ fontWeight: 700, fontSize: 15 }}>{p.profile.name}</div>
-                <div style={{ fontSize: 12, color: "var(--muted)" }}>{branchName} • <span style={{ color: "var(--green)", fontWeight: 600 }}>{p.online ? "Online" : "Offline"}</span></div>
+                <div style={{ fontSize: 12, color: "var(--muted)" }}>{branchName}</div>
               </div>
               <button className="icon-btn" onClick={() => setShowMenu(false)}><Icon name="close" size={18} /></button>
             </div>
             <div className="modal-body" style={{ padding: 10, flex: 1, display: "flex", flexDirection: "column" }}>
+              <button className={"net-toggle " + (p.online ? "online" : "offline")} style={{ margin: "0 0 8px", width: "100%", padding: "10px 0" }} onClick={p.onToggleOnline}>
+                {p.online ? "Online" : "Offline — tap to reconnect"}
+              </button>
               {menuItems.map(([t, label, ic]) => (
                 <button key={t} className={"nav-item" + (tab === t ? " active" : "")} style={{ borderRadius: 999 }} onClick={() => go(t)}>
                   <Icon name={ic} size={19} /><span>{label}</span>
                 </button>
               ))}
               <div className="nav-sep" />
-              <button className="nav-item" style={{ borderRadius: 999 }} onClick={() => { setShowMenu(false); setShowPw(true); }}>
-                <Icon name="lock" size={19} /><span>Change password</span>
-              </button>
               <button className="nav-item" style={{ borderRadius: 999, color: "var(--red)", marginTop: "auto" }} onClick={doLogout}>
                 <Icon name="logout" size={19} /><span>Logout</span>
               </button>
@@ -114,7 +107,6 @@ export function Staff(p: SharedProps) {
           </div>
         </div>
       )}
-      {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
     </>
   );
 }
@@ -403,7 +395,6 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
   const branchSales = useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []);
   const branchPurch = useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []);
   const customers = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const settings = useLiveQuery(() => localdb.settings.get("main"), [], undefined);
 
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
 
@@ -485,7 +476,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
     : Math.max(0, Number(partialAmt) || 0);
   const dueNow = Math.max(0, cartTotal - amountPaidNow);
 
-  const save = async (print: boolean) => {
+  const save = async () => {
     if (!cart.length) return toast("Add at least one item");
     if (cart.some((c) => c.qty <= 0)) return toast("Every item needs a quantity greater than 0");
     if (payMode === "both" && (Number(cashAmt) || 0) + (Number(upiAmt) || 0) <= 0) {
@@ -508,7 +499,6 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
       mode: payMode, amountPaid: amountPaidNow, cashAmount: finalCash, upiAmount: finalUpi,
     }, items);
     setSaving(false);
-    if (print) printItemizedBill(billNo, cart.map((c) => ({ name: c.name, qty: c.qty, price: c.price })), cust.trim() || "Walk-in", payMode, settings, branchName, amountPaidNow);
     toast(`Bill ${billNo} saved` + (due > 0 ? ` — ${money(due)} due` : "") + (shared.online ? "" : " offline"));
     setCart([]); setCust(""); setDiscType("none"); setDiscCustom(0); setDiscFlat(0);
     setPayMode("cash"); setCashAmt(""); setUpiAmt(""); setPaidFull(true); setPartialAmt(""); shared.onSync();
@@ -516,53 +506,34 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
 
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
-        <span style={{ fontSize: 13, color: "var(--muted)" }}>Today: <b style={{ color: "var(--green)" }}>{money(todayTotal)}</b></span>
-      </div>
-
-      {/* Customer + Date */}
-      <div className="card card-pad" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-        <div className="field" style={{ position: "relative", marginBottom: 0 }}>
-          <label>Customer Search</label>
-          <div style={{ position: "relative" }}>
-            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="personSearch" size={17} /></span>
-            <input style={{ paddingLeft: 34 }} value={cust} onChange={(e) => { setCust(e.target.value); setShowCustDd(true); }}
+      <div className="card card-pad">
+        <div style={{ display: "flex", gap: 10 }}>
+          <div className="field" style={{ position: "relative", marginBottom: 0, flex: 2 }}>
+            <input value={cust} onChange={(e) => { setCust(e.target.value); setShowCustDd(true); }}
               onFocus={() => setShowCustDd(true)} onBlur={() => setTimeout(() => setShowCustDd(false), 150)}
-              placeholder="Name or Mobile No." />
+              placeholder="Customer name or mobile" />
+            {showCustDd && custMatches.length > 0 && (
+              <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 220, overflowY: "auto", marginTop: 4 }}>
+                {custMatches.map((c) => (
+                  <div key={c.id} className="row" style={{ padding: "10px 14px", cursor: "pointer" }}
+                    onMouseDown={() => { setCust(c.name); setShowCustDd(false); }}>
+                    <div><div className="main">{c.name}</div><div className="sub">{c.phone || "—"}</div></div>
+                    {c.balance_due > 0 && <span className="amt out">{money(c.balance_due)} due</span>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
-          {showCustDd && custMatches.length > 0 && (
-            <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 220, overflowY: "auto", marginTop: 4 }}>
-              {custMatches.map((c) => (
-                <div key={c.id} className="row" style={{ padding: "10px 14px", cursor: "pointer" }}
-                  onMouseDown={() => { setCust(c.name); setShowCustDd(false); }}>
-                  <div><div className="main">{c.name}</div><div className="sub">{c.phone || "—"}</div></div>
-                  {c.balance_due > 0 && <span className="amt out">{money(c.balance_due)} due</span>}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="field" style={{ marginBottom: 0 }}>
-          <label>Bill Date</label>
-          <div style={{ position: "relative" }}>
-            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="calendar" size={16} /></span>
-            <input style={{ paddingLeft: 34 }} type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <div className="field" style={{ marginBottom: 0, flex: 1 }}>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
           </div>
         </div>
-      </div>
-
-      {/* Product search — tap a result and it's added instantly */}
-      <div className="card card-pad" style={{ marginTop: 14 }}>
-        <div className="field" style={{ position: "relative", marginBottom: 0 }}>
-          <label>Search Product</label>
-          <div style={{ position: "relative" }}>
-            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={17} /></span>
-            <input ref={productInputRef} style={{ paddingLeft: 34 }} value={pq}
-              onChange={(e) => { setPq(e.target.value); setShowPd(true); setPActive(0); }}
-              onFocus={() => setShowPd(true)} onBlur={() => setTimeout(() => setShowPd(false), 150)}
-              onKeyDown={onProductKeyDown}
-              placeholder="Scan barcode or type product name…" />
-          </div>
+        <div className="field" style={{ position: "relative", marginBottom: 0, marginTop: 10 }}>
+          <input ref={productInputRef} className="search" style={{ width: "100%" }} value={pq}
+            onChange={(e) => { setPq(e.target.value); setShowPd(true); setPActive(0); }}
+            onFocus={() => setShowPd(true)} onBlur={() => setTimeout(() => setShowPd(false), 150)}
+            onKeyDown={onProductKeyDown}
+            placeholder="🔍 Search product to add…" />
           {showPd && pMatches.length > 0 && (
             <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 280, overflowY: "auto", marginTop: 4 }}>
               {pMatches.map((pr, i) => (
@@ -577,44 +548,42 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
       </div>
 
       {/* Added items */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "18px 0 8px" }}>
-        <h3 style={{ fontSize: 16, margin: 0 }}>Items List ({cart.length})</h3>
-        <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--faint)" }}>Line Items</span>
-      </div>
+      {cart.length > 0 && (
+        <h3 style={{ fontSize: 14, color: "var(--muted)", margin: "18px 0 8px" }}>Items ({cart.length})</h3>
+      )}
       {cart.length ? cart.map((c, i) => {
         const { lineTotal: lt } = computeLineTotal(c.qty, c.price, undefined, 0);
         return (
           <div className="card card-pad" key={i} style={{ marginBottom: 10, boxShadow: "var(--shadow)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div>
+              <div style={{ minWidth: 0 }}>
                 <div className="main" style={{ fontWeight: 700 }}>{c.name}</div>
-                <div className="sub">Rate: {money(c.price)}{c.perBox ? ` · 1 box = ${c.perBox} pcs` : ""}</div>
+                <div className="sub">{money(c.price)} each{c.perBox ? ` · 1 box = ${c.perBox} pcs` : ""}</div>
               </div>
-              <button className="del-btn" style={{ background: "transparent", color: "var(--red)", width: 32, height: 32 }} onClick={() => removeItem(i)}><Icon name="trash" size={17} /></button>
+              <button className="del-btn" style={{ background: "transparent", color: "var(--red)", width: 30, height: 30, flexShrink: 0 }} onClick={() => removeItem(i)}><Icon name="trash" size={16} /></button>
             </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 10, gap: 12, flexWrap: "wrap" }}>
-              {c.perBox > 0 && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12, gap: 10 }}>
+              <div style={{ display: "flex", gap: 10 }}>
+                {c.perBox > 0 && (
+                  <div>
+                    <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600 }}>BOX</label>
+                    <div className="stepper sm" style={{ marginTop: 2 }}>
+                      <button onClick={() => bump(i, "box", -1)}><Icon name="minus" size={12} /></button>
+                      <span>{c.box}</span>
+                      <button onClick={() => bump(i, "box", 1)}><Icon name="plus" size={12} /></button>
+                    </div>
+                  </div>
+                )}
                 <div>
-                  <label style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>Box</label>
-                  <div className="stepper" style={{ marginTop: 3 }}>
-                    <button onClick={() => bump(i, "box", -1)}><Icon name="minus" size={15} /></button>
-                    <span>{c.box}</span>
-                    <button onClick={() => bump(i, "box", 1)}><Icon name="plus" size={15} /></button>
+                  <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600 }}>PCS</label>
+                  <div className="stepper sm" style={{ marginTop: 2 }}>
+                    <button onClick={() => bump(i, "pcs", -1)}><Icon name="minus" size={12} /></button>
+                    <span>{c.pcs}</span>
+                    <button onClick={() => bump(i, "pcs", 1)}><Icon name="plus" size={12} /></button>
                   </div>
                 </div>
-              )}
-              <div>
-                <label style={{ fontSize: 11, color: "var(--muted)", fontWeight: 600 }}>Pcs</label>
-                <div className="stepper" style={{ marginTop: 3 }}>
-                  <button onClick={() => bump(i, "pcs", -1)}><Icon name="minus" size={15} /></button>
-                  <span>{c.pcs}</span>
-                  <button onClick={() => bump(i, "pcs", 1)}><Icon name="plus" size={15} /></button>
-                </div>
               </div>
-              <div style={{ textAlign: "right", marginLeft: "auto" }}>
-                <div className="sub">Rate: {money(c.price)}</div>
-                <b style={{ fontSize: 17, color: "var(--accent)" }}>{money(lt)}</b>
-              </div>
+              <b style={{ fontSize: 16, color: "var(--accent)", flexShrink: 0 }}>{money(lt)}</b>
             </div>
           </div>
         );
@@ -697,17 +666,15 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
       )}
 
       <div className="btn-row" style={{ marginTop: 16, marginBottom: 4 }}>
-        <button className="btn ghost" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={() => save(false)} disabled={saving || !cart.length}><Icon name="wallet" size={16} /> Save Bill</button>
-        <button className="btn" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={() => save(true)} disabled={saving || !cart.length}><Icon name="print" size={16} /> Save &amp; Print</button>
+        <button className="btn" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={save} disabled={saving || !cart.length}><Icon name="wallet" size={16} /> Save Bill</button>
       </div>
     </>
   );
 }
 
-/* Previous Bills — past sales for this branch, grouped by bill_no, with reprint. */
+/* Previous Bills — past sales for this branch, grouped by bill_no. */
 function PreviousBills({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
   const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const settings = useLiveQuery(() => localdb.settings.get("main"), [], undefined);
   const [q, setQ] = useState("");
 
   const groups = useMemo(() => {
@@ -723,10 +690,6 @@ function PreviousBills({ branchId, shared, branchName }: { branchId: string; sha
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [sales, q]);
 
-  const reprint = (g: typeof groups[number]) => {
-    printItemizedBill(g.billNo, g.items.map((s) => ({ name: s.product_name, qty: s.qty, price: s.price })), g.customer, g.pay, settings, branchName, g.total);
-  };
-
   return (
     <div className="card">
       <div className="card-head"><h3>Previous bills</h3><input className="search" placeholder="Search bill # or customer…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
@@ -735,10 +698,7 @@ function PreviousBills({ branchId, shared, branchName }: { branchId: string; sha
           <div className="row" key={g.billNo}>
             <div><div className="main">{g.billNo.startsWith(g.customer) ? g.billNo : `Bill #${g.billNo}`}</div>
               <div className="sub">{g.customer} · {dateStr(g.date)} · {g.items.length} item{g.items.length === 1 ? "" : "s"} · {g.pay.toUpperCase()}</div></div>
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <b>{money(g.total)}</b>
-              <button className="edit-btn" onClick={() => reprint(g)}><Icon name="bill" size={14} /> Print</button>
-            </div>
+            <b>{money(g.total)}</b>
           </div>
         )) : <div className="empty">No bills yet.</div>}
       </div>
@@ -805,17 +765,17 @@ function PurchaseForm({ branchId, shared }: { branchId: string; shared: SharedPr
             {products.length ? products.map((pr) => <option key={pr.id} value={pr.id}>{pr.name} — cost {money(pr.cost_price)}</option>) : <option>No products — owner must add first</option>}
           </select>
         </div>
-        <div className="qty-row" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+        <div className="qty-row">
           <div className="field"><label>Quantity</label>
-            <div className="stepper" style={{ width: "100%", justifyContent: "space-between" }}>
+            <div className="stepper">
               <button onClick={() => setQty((v) => Math.max(1, v - 1))}><Icon name="minus" size={15} /></button>
-              <span style={{ flex: 1 }}>{qty}</span>
+              <span>{qty}</span>
               <button onClick={() => setQty((v) => v + 1)}><Icon name="plus" size={15} /></button>
             </div>
           </div>
           <div className="field"><label>Cost per Unit</label><input type="number" inputMode="numeric" value={cost} onChange={(e) => setCost(+e.target.value)} /></div>
-          <div className="field"><label>Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
         </div>
+        <div className="field"><label>Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
         <div className="field"><label>Payment Method</label>
           <div className="pay-select">
             {(["cash", "credit"] as const).map((m) => <button key={m} className={"pay-opt" + (pay === m ? " active" : "")} onClick={() => setPay(m)}>{m === "credit" ? "Credit" : "Cash"}</button>)}
@@ -853,7 +813,6 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
   const bills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []))
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const customers = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const settings = useLiveQuery(() => localdb.settings.get("main"), [], undefined);
   const due = sum(bills.filter((b) => b.status === "unpaid"), "due_amount");
   const delBill = async (id: string) => { if (confirmDel("bill")) { await softDelete("bills", id); toast("Deleted"); shared.onSync(); } };
 
@@ -906,7 +865,6 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
             <div style={{ display: "flex", gap: 6 }}>
               <button className="icon-btn" style={{ background: "var(--surface-2)", width: 36, height: 36 }} onClick={() => setEditBill(b)}><Icon name="settings" size={16} /></button>
-              <button className="icon-btn" style={{ background: "var(--surface-2)", width: 36, height: 36 }} title="Print invoice" onClick={() => printInvoice(b, settings, branchName)}><Icon name="print" size={16} /></button>
               <button className="icon-btn" style={{ background: "var(--surface-2)", width: 36, height: 36, color: "var(--red)" }} onClick={() => delBill(b.id)}><Icon name="trash" size={16} /></button>
             </div>
             {b.status === "unpaid" && <button className="btn" style={{ width: "auto", padding: "9px 18px", borderRadius: 999 }} onClick={() => { setPayFor(b); setPayAmt(b.due_amount); }}>Pay Now</button>}

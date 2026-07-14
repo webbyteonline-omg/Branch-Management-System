@@ -58,6 +58,8 @@ input, select { font-family: inherit; font-size: 15px; }
 .stepper { display: inline-flex; align-items: center; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm); }
 .stepper button { width: 40px; height: 40px; display: grid; place-items: center; color: var(--accent); }
 .stepper span { min-width: 44px; text-align: center; font-weight: 700; font-size: 15px; border-left: 1px solid var(--line); border-right: 1px solid var(--line); padding: 0 4px; height: 40px; display: flex; align-items: center; justify-content: center; }
+.stepper.sm button { width: 30px; height: 30px; }
+.stepper.sm span { min-width: 26px; height: 30px; font-size: 13px; padding: 0 2px; }
 .bento { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 .stock-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
 

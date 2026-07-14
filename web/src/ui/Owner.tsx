@@ -12,7 +12,6 @@ import { saveProduct, softDelete, restoreRow, saveSettings, addStockAdjustment }
 import { LedgerModal } from "./Ledger";
 import { EditCustomerModal, EditEntryModal } from "./Edits";
 import { downloadExcel } from "../lib/excel";
-import { printItemizedBill } from "../lib/invoice";
 import { supabase } from "../lib/supabase";
 import { BarChart, Donut } from "./Charts";
 import { AddCustomerModal, AddExpenseModal, AddPurchaseModal } from "./OwnerAdd";
@@ -22,6 +21,19 @@ type ORange = Range | "custom";
 const between = (rows: any[], from: number, to: number) => rows.filter((r) => { const t = new Date(r.created_at).getTime(); return t >= from && t <= to; });
 const inRange = (rows: any[], from: number) => rows.filter((r) => new Date(r.created_at).getTime() >= from);
 const confirmDelete = (what: string) => window.confirm(`Delete this ${what}? It moves to deleted items and can be restored.`);
+
+// Owner app is desktop-first, but on a phone (or the app's own mobile
+// drawer breakpoint) several screens swap their table layout for the
+// card-based mobile layout used throughout the Staff app.
+function useIsMobile(breakpoint = 900) {
+  const [isMobile, setIsMobile] = useState(() => typeof window !== "undefined" && window.innerWidth <= breakpoint);
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth <= breakpoint);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [breakpoint]);
+  return isMobile;
+}
 
 function last14Days(sales: any[]) {
   const days: { label: string; value: number }[] = [];
@@ -36,6 +48,7 @@ function last14Days(sales: any[]) {
 }
 
 export function Owner(p: SharedProps) {
+  const isMobile = useIsMobile();
   const [range, setRange] = useState<ORange>("today");
   const [cFrom, setCFrom] = useState(new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10));
   const [cTo, setCTo] = useState(new Date().toISOString().slice(0, 10));
@@ -131,14 +144,14 @@ export function Owner(p: SharedProps) {
         </div>
 
         <div className="content">
-          {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go }} />}
-          {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync: p.onSync }} />}
+          {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go, isMobile }} />}
+          {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync: p.onSync, isMobile }} />}
           {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} branches={branches} onSync={p.onSync} />}
-          {view === "ledger" && <LedgerPage custAll={custAll} bmap={bmap} onSync={p.onSync} />}
-          {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} products={products} userId={p.profile.id} onSync={p.onSync} />}
-          {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
+          {view === "ledger" && <LedgerPage custAll={custAll} bmap={bmap} onSync={p.onSync} isMobile={isMobile} />}
+          {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} products={products} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
+          {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
           {view === "products" && <ProductsPage prodAll={prodAll} online={p.online} branches={branches} onSync={p.onSync} />}
-          {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} settings={settings} branches={branches} staffMap={staffMap} />}
+          {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} settings={settings} branches={branches} staffMap={staffMap} isMobile={isMobile} />}
           {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
           {view === "reports" && <ReportsPage rSales={rSales} range={rangeText} staffMap={staffMap} />}
           {view === "settings" && <SettingsPage settings={settings} onSync={p.onSync} branches={branches} />}
@@ -149,7 +162,7 @@ export function Owner(p: SharedProps) {
 }
 
 /* ---------- dashboard ---------- */
-function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go }: any) {
+function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go, isMobile }: any) {
   const openBills = bills.filter((b: any) => b.status === "unpaid");
   const totalDue = sum(openBills, "due_amount");
   const custNames = new Set(rSales.map((s: any) => s.customer_name).filter((n: string) => n && n !== "Walk-in"));
@@ -164,13 +177,57 @@ function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bil
     credit: sum(rSales.filter((s: any) => s.payment_mode === "credit"), "total"),
   };
 
-  // low stock across branches
-  const low: { name: string; branch: string; qty: number }[] = [];
-  for (const b of branches.filter((x: any) => x.id !== "ho"))
-    for (const pr2 of products) {
-      const qty = computeStock(pr2.id, b.id, sales, purchases);
-      if (qty <= (pr2.low_stock_at ?? 5)) low.push({ name: pr2.name, branch: shortBranch(b.name), qty });
-    }
+  if (isMobile) {
+    const realBranches = branches.filter((b: any) => b.id !== "ho");
+    const recent = [
+      ...rSales.map((s: any) => ({ t: s.created_at, br: s.branch_id, amt: s.total, synced: s._synced })),
+    ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 5);
+    return (
+      <>
+        <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr" }}>
+          <div className="stat"><div className="label">Total Sales</div><div className="value" style={{ fontSize: 19, color: "var(--accent)" }}>{money(sum(rSales, "total"))}</div>
+            <div className={"delta " + dS.cls}>{dS.txt}</div></div>
+          <div className="stat"><div className="label">Unpaid Bills</div><div className="value" style={{ fontSize: 19 }}>{openBills.length}</div>
+            <div className="delta down">{money(totalDue)} due</div></div>
+          <div className="stat"><div className="label">Purchases</div><div className="value" style={{ fontSize: 19 }}>{money(sum(rPurch, "total"))}</div>
+            <div className={"delta " + dP.cls}>{dP.txt}</div></div>
+          <div className="stat"><div className="label">Customers</div><div className="value" style={{ fontSize: 19 }}>{custNames.size}</div>
+            <div className="delta up">active this period</div></div>
+        </div>
+
+        <div className="card card-pad" style={{ marginTop: 14 }}>
+          <h3 style={{ margin: "0 0 14px", fontSize: 15 }}>Sales trend</h3>
+          <BarChart data={last14Days(sales)} color="var(--accent)" />
+        </div>
+
+        <h3 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--muted)", margin: "18px 0 8px" }}>Branch Performance</h3>
+        {realBranches.map((b: any) => {
+          const bs = rSales.filter((s: any) => s.branch_id === b.id);
+          const tops = topItems(bs);
+          return (
+            <div key={b.id} className="card card-pad" style={{ marginBottom: 10 }} onClick={() => go("branch", b.id)}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div className="main" style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 7 }}><span className="status-dot" />{shortBranch(b.name)}</div>
+                <b style={{ color: "var(--green)" }}>{money(sum(bs, "total"))}</b>
+              </div>
+              <div className="sub" style={{ marginTop: 4 }}>Top: {tops[0] || "No sales yet"}</div>
+            </div>
+          );
+        })}
+
+        <h3 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--muted)", margin: "18px 0 8px" }}>Recent Transactions</h3>
+        {recent.length ? recent.map((r, i) => (
+          <div className="row" key={i} style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 14px", marginBottom: 6 }}>
+            <div><div className="main">{bmap[r.br] || r.br}</div><div className="sub">{timeStr(r.t)}</div></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <b>{money(r.amt)}</b>
+              <span className={"badge " + (r.synced === 0 ? "unpaid" : "done")}>{r.synced === 0 ? "Pending" : "Synced"}</span>
+            </div>
+          </div>
+        )) : <div className="card card-pad"><div className="empty">No transactions yet.</div></div>}
+      </>
+    );
+  }
 
   return (
     <>
@@ -182,15 +239,6 @@ function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bil
         <Stat label="Purchases + Expenses" value={money(sum(rPurch, "total") + sum(rExp, "amount"))} delta={dP} icon="cart" />
         <Stat label="Active Customers" value={String(custNames.size)} delta={{ cls: "up", txt: "with orders this period" }} icon="customers" />
       </div>
-
-      {low.length > 0 && (
-        <div className="card alert-card">
-          <div className="card-head"><h3 style={{ color: "var(--amber)" }}>⚠ Low stock — {low.length} item{low.length === 1 ? "" : "s"} need restocking</h3></div>
-          <div className="card-pad" style={{ paddingTop: 8, display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {low.slice(0, 12).map((l, i) => <span className="chip" key={i}>{l.name} · <b>{l.branch}</b> · {l.qty} left</span>)}
-          </div>
-        </div>
-      )}
 
       <div className="grid-2">
         <div className="card card-pad">
@@ -281,7 +329,7 @@ function TxnTable({ rSales, rPurch, bmap }: any) {
 }
 
 /* ---------- branch detail ---------- */
-function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync }: any) {
+function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync, isMobile }: any) {
   const b = branches.find((x: any) => x.id === branchId);
   const bs = rSales.filter((s: any) => s.branch_id === branchId);
   const bp = rPurch.filter((s: any) => s.branch_id === branchId);
@@ -293,7 +341,36 @@ function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, 
     ...bp.map((x: any) => ({ id: x.id, table: "purchases", t: x.created_at, label: `Purchase · ${x.product_name} × ${x.qty}`, who: x.supplier, amt: x.total, dir: "out", what: "purchase" })),
     ...be.map((x: any) => ({ id: x.id, table: "expenses", t: x.created_at, label: `Expense · ${x.category}${x.note ? " (" + x.note + ")" : ""}`, who: "", amt: x.amount, dir: "out", what: "expense" })),
   ].sort((a, b2) => new Date(b2.t).getTime() - new Date(a.t).getTime()).slice(0, 60);
+  const [q, setQ] = useState("");
+  const filtered = q.trim() ? items.filter((i) => (i.label + i.who).toLowerCase().includes(q.toLowerCase())) : items;
   if (!b) return <div className="empty">Branch not found.</div>;
+
+  if (isMobile) {
+    return (
+      <>
+        <button className="back" onClick={() => go("dashboard")}>‹ Back</button>
+        <h1 className="page-title" style={{ fontSize: 20 }}>{b.name}</h1>
+        <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr", marginTop: 10 }}>
+          <div className="stat"><div className="label">Sales</div><div className="value" style={{ color: "var(--green)", fontSize: 18 }}>{money(sum(bs, "total"))}</div></div>
+          <div className="stat"><div className="label">Purchases</div><div className="value" style={{ fontSize: 18 }}>{money(sum(bp, "total"))}</div></div>
+          <div className="stat"><div className="label">Expenses</div><div className="value" style={{ color: "var(--red)", fontSize: 18 }}>{money(sum(be, "amount"))}</div></div>
+          <div className="stat"><div className="label">Unpaid dues</div><div className="value" style={{ color: "var(--red)", fontSize: 18 }}>{money(due)}</div></div>
+        </div>
+        <h3 style={{ fontSize: 15, margin: "18px 0 8px" }}>Day Book</h3>
+        <input className="search" style={{ width: "100%", marginBottom: 10 }} placeholder="Search transactions…" value={q} onChange={(e) => setQ(e.target.value)} />
+        {filtered.length ? filtered.map((i) => (
+          <div className="card card-pad" key={i.id} style={{ marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div><div className="main">{i.label}</div><div className="sub">{i.who ? i.who + " · " : ""}{timeStr(i.t)}</div></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <b className={"amt " + i.dir}>{i.dir === "in" ? "+" : "−"}{money(i.amt)}</b>
+              <button className="del-btn" onClick={() => del(i.table, i.id, i.what)}><Icon name="trash" size={13} /></button>
+            </div>
+          </div>
+        )) : <div className="card card-pad"><div className="empty">No entries.</div></div>}
+      </>
+    );
+  }
+
   return (
     <>
       <button className="back" onClick={() => go("dashboard")}>‹ Back to overview</button>
@@ -368,7 +445,7 @@ function CustomersPage({ custAll, bmap, branches, onSync }: any) {
 }
 
 /* ---------- ledger (all customers, head-office wide) ---------- */
-function LedgerPage({ custAll, bmap, onSync }: any) {
+function LedgerPage({ custAll, bmap, onSync, isMobile }: any) {
   const [q, setQ] = useState("");
   const [ledger, setLedger] = useState<{ branchId: string; name: string } | null>(null);
   let rows = live(custAll);
@@ -376,6 +453,35 @@ function LedgerPage({ custAll, bmap, onSync }: any) {
   rows = [...rows].sort((a: any, b: any) => b.balance_due - a.balance_due);
   const totalDue = sum(rows as any[], "balance_due" as any);
   const withDue = rows.filter((c: any) => c.balance_due > 0).length;
+  const initials2 = (n: string) => n.split(" ").map((s: string) => s[0]).slice(0, 2).join("").toUpperCase();
+
+  if (isMobile) {
+    return (
+      <>
+        <h1 className="page-title" style={{ fontSize: 20 }}>Master Ledger</h1>
+        <div className="bento" style={{ marginBottom: 14 }}>
+          <div className="stat"><div className="label">Total Customers</div><div className="value" style={{ fontSize: 19 }}>{rows.length}</div></div>
+          <div className="stat"><div className="label">Total Outstanding</div><div className="value" style={{ fontSize: 19, color: totalDue > 0 ? "var(--red)" : "var(--green)" }}>{money(totalDue)}</div></div>
+        </div>
+        <input className="search" style={{ width: "100%", marginBottom: 14 }} placeholder="Search customers by name or phone…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <h3 style={{ fontSize: 15, margin: 0 }}>Customer Balances</h3>
+          <span style={{ fontSize: 12, color: "var(--muted)" }}>{withDue} with dues</span>
+        </div>
+        {rows.length ? rows.map((c: any) => (
+          <div key={c.id} className="card card-pad" style={{ marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }}
+            onClick={() => setLedger({ branchId: c.branch_id, name: c.name })}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div style={{ width: 42, height: 42, borderRadius: "50%", background: c.balance_due > 0 ? "var(--accent-soft)" : "var(--surface-4)", color: c.balance_due > 0 ? "var(--accent)" : "var(--muted)", display: "grid", placeItems: "center", fontWeight: 800, fontSize: 13 }}>{initials2(c.name)}</div>
+              <div><div className="main" style={{ fontWeight: 700 }}>{c.name}</div><div className="sub">{c.phone || "—"} · {bmap[c.branch_id]}</div></div>
+            </div>
+            <b className={c.balance_due > 0 ? "amt out" : "amt in"}>{c.balance_due > 0 ? money(c.balance_due) : "Clear"}</b>
+          </div>
+        )) : <div className="card card-pad"><div className="empty">No customers yet.</div></div>}
+        {ledger && <LedgerModal branchId={ledger.branchId} name={ledger.name} onClose={() => setLedger(null)} onSync={onSync} />}
+      </>
+    );
+  }
 
   return (
     <><h1 className="page-title">Ledger</h1><p className="page-sub">Customer balances (udhaar) across both branches.</p>
@@ -482,7 +588,7 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
 }
 
 /* ---------- purchases (professional) ---------- */
-function PurchasesPage({ rPurch, purchAll, bmap, label, branches, products, userId, onSync }: any) {
+function PurchasesPage({ rPurch, purchAll, bmap, label, branches, products, userId, onSync, isMobile }: any) {
   const [showDeleted, setShowDeleted] = useState(false);
   const [branchF, setBranchF] = useState("all");
   const [q, setQ] = useState("");
@@ -509,6 +615,49 @@ function PurchasesPage({ rPurch, purchAll, bmap, label, branches, products, user
   };
   const exportXls = () => downloadExcel("purchases", ["Date", "Branch", "Supplier", "Item", "Qty", "Cost each", "Total", "Bill no", "Payment", "Note"],
     rows.map((x) => [dateStr(x.created_at), bmap[x.branch_id] || "", x.supplier || "", x.product_name, x.qty, x.cost, x.total, x.invoice_no || "", (x.payment_mode || "cash").toUpperCase(), x.note || ""]));
+
+  if (isMobile) {
+    return (
+      <>
+        <h1 className="page-title" style={{ fontSize: 20 }}>Purchase Register</h1>
+        <p className="page-sub" style={{ margin: "2px 0 14px" }}>Manage inventory inflows and credit.</p>
+        <div className="bento" style={{ marginBottom: 14 }}>
+          <div className="stat"><div className="label">Total Purchases</div><div className="value" style={{ fontSize: 18, color: "var(--red)" }}>{money(total)}</div></div>
+          <div className="stat"><div className="label">Outstanding</div><div className="value" style={{ fontSize: 18 }}>{money(credit)}</div></div>
+        </div>
+        {supTop.length > 0 && (
+          <div style={{ display: "flex", gap: 8, overflowX: "auto", marginBottom: 14, paddingBottom: 2 }}>
+            {supTop.map(([s, v]) => <span className="chip" key={s} style={{ flexShrink: 0 }}>{s} · <b>{money(v)}</b></span>)}
+          </div>
+        )}
+        <input className="search" style={{ width: "100%", marginBottom: 14 }} placeholder="Search invoices…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <h3 style={{ fontSize: 15, margin: 0 }}>Recent Purchases</h3>
+          <button className="edit-btn" onClick={() => setShowDeleted((v: boolean) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
+        </div>
+        {rows.length ? rows.slice(0, 100).map((x: any) => (
+          <div className="card card-pad" key={x.id} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <span className="b-tag">{bmap[x.branch_id]}</span>
+              <div style={{ textAlign: "right" }}>
+                <b style={{ fontSize: 16, color: "var(--accent)" }}>{money(x.total)}</b>
+                <div><span className="badge role">{(x.payment_mode || "cash").toUpperCase()}</span></div>
+              </div>
+            </div>
+            <div className="main" style={{ fontWeight: 700, marginTop: 6 }}>{x.product_name}</div>
+            <div className="sub">{x.supplier || "—"} · {dateStr(x.created_at)}{x.invoice_no ? " · #" + x.invoice_no : ""}</div>
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              {!showDeleted && <button className="edit-btn" onClick={() => setEditRow(x)}>Edit</button>}
+              <button className={showDeleted ? "pay-btn" : "del-btn"} onClick={() => act(x)}>{showDeleted ? "Restore" : <Icon name="trash" size={13} />}</button>
+            </div>
+          </div>
+        )) : <div className="card card-pad"><div className="empty">Nothing here.</div></div>}
+        <button className="fab round" onClick={() => setAddP(true)}><Icon name="plus" size={22} /></button>
+        {editRow && <EditEntryModal table="purchases" row={editRow} onClose={() => setEditRow(null)} onSync={onSync} />}
+        {addP && <AddPurchaseModal branches={branches} products={products} userId={userId} onClose={() => setAddP(false)} onSync={onSync} />}
+      </>
+    );
+  }
 
   return (
     <><h1 className="page-title">Purchases</h1><p className="page-sub">What each branch bought, from whom, when · {showDeleted ? "deleted items" : String(label).toLowerCase()}.</p>
@@ -557,18 +706,66 @@ function PurchasesPage({ rPurch, purchAll, bmap, label, branches, products, user
 }
 
 /* ---------- inventory ---------- */
-function InventoryPage({ products, sales, purchases, branches, userId, onSync }: any) {
+function InventoryPage({ products, sales, purchases, branches, userId, onSync, isMobile }: any) {
   const brs = branches.filter((b: any) => b.id !== "ho");
   const [adj, setAdj] = useState<any>(null);
   const [branchId, setBranchId] = useState(brs[0]?.id || "");
   const [delta, setDelta] = useState(0);
   const [reason, setReason] = useState("");
+  const [q, setQ] = useState("");
 
   const doAdjust = async () => {
     if (!delta) return toast("Enter a +/- quantity");
     await addStockAdjustment(branchId, userId, { id: adj.id, name: adj.name }, Number(delta), reason.trim());
     toast("Stock adjusted"); setAdj(null); setDelta(0); setReason(""); onSync();
   };
+
+  if (isMobile) {
+    const rows = products.filter((pr: any) => pr.name.toLowerCase().includes(q.toLowerCase()));
+    const globalValue = rows.reduce((a: number, pr: any) => a + brs.reduce((s: number, b: any) => s + computeStock(pr.id, b.id, sales, purchases), 0) * pr.sale_price, 0);
+    return (
+      <>
+        <input className="search" style={{ width: "100%", marginBottom: 14 }} placeholder="Search inventory…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div style={{ background: "var(--accent)", color: "#fff", borderRadius: 14, padding: 16, marginBottom: 16 }}>
+          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".6px", opacity: .85 }}>Global Stock Value</span>
+          <div style={{ fontSize: 24, fontWeight: 800, marginTop: 4 }}>{money(globalValue)}</div>
+        </div>
+        {rows.length ? rows.map((pr: any) => {
+          const per = brs.map((b: any) => ({ b, qty: computeStock(pr.id, b.id, sales, purchases) }));
+          const total = per.reduce((a: number, x: any) => a + x.qty, 0);
+          const anyLow = per.some((x: any) => x.qty <= (pr.low_stock_at ?? 5));
+          return (
+            <div className="card card-pad" key={pr.id} style={{ marginBottom: 10, borderColor: anyLow ? "var(--red)" : undefined }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div><div className="main" style={{ fontWeight: 700 }}>{pr.name}</div><div className="sub">per {pr.unit}</div></div>
+                <div style={{ textAlign: "right" }}><b style={{ fontSize: 17, color: anyLow ? "var(--red)" : "var(--text)" }}>{total}</b><div className="sub">total units</div></div>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
+                {per.map((x: any) => (
+                  <div key={x.b.id}><span className="sub">{shortBranch(x.b.name)}</span>{" "}
+                    <span className={x.qty <= (pr.low_stock_at ?? 5) ? "stock low" : "stock"} style={{ fontSize: 13 }}>{x.qty}</span></div>
+                ))}
+              </div>
+              <button className="edit-btn" style={{ width: "100%", marginTop: 10, padding: "9px 0" }} onClick={() => { setAdj(pr); setBranchId(brs[0]?.id || ""); }}>Adjust Stock</button>
+            </div>
+          );
+        }) : <div className="card card-pad"><div className="empty">No products.</div></div>}
+
+        {adj && (
+          <Modal title={`Adjust stock — ${adj.name}`} onClose={() => setAdj(null)}>
+            <div className="form-grid">
+              <div className="qty-row">
+                <div className="field"><label>Branch</label><select value={branchId} onChange={(e) => setBranchId(e.target.value)}>{brs.map((b: any) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
+                <div className="field"><label>Change (+ add / − remove)</label><input type="number" inputMode="numeric" value={delta} onChange={(e) => setDelta(+e.target.value)} placeholder="e.g. 10 or -3" /></div>
+              </div>
+              <div className="field"><label>Reason</label><input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Opening stock / wastage / correction" /></div>
+              <div className="btn-row"><button className="btn ghost" onClick={() => setAdj(null)}>Cancel</button><button className="btn" onClick={doAdjust}>Save adjustment</button></div>
+            </div>
+          </Modal>
+        )}
+      </>
+    );
+  }
 
   return (
     <><h1 className="page-title">Inventory</h1><p className="page-sub">Live stock per branch (purchases in − sales out). Adjust for opening stock or wastage.</p>
@@ -609,9 +806,9 @@ function InventoryPage({ products, sales, purchases, branches, userId, onSync }:
 }
 
 /* ---------- sales / bill history ---------- */
-function SalesHistoryPage({ sales, bmap, settings, branches, staffMap }: any) {
+function SalesHistoryPage({ sales, bmap, branches, staffMap, isMobile }: any) {
   const [payFilter, setPayFilter] = useState<"all" | "cash" | "upi" | "credit">("all");
-  const bname = (id: string) => (branches.find((b: any) => b.id === id)?.name) || id;
+  const [q, setQ] = useState("");
 
   // group sales into bills by bill_no
   const groups = new Map<string, any>();
@@ -622,30 +819,67 @@ function SalesHistoryPage({ sales, bmap, settings, branches, staffMap }: any) {
     g.items.push(s); g.total += s.total;
     groups.set(key, g);
   }
-  const bills = [...groups.values()].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 200);
+  let bills = [...groups.values()].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 200);
 
-  const reprint = (g: any) => printItemizedBill(g.key.startsWith("B-") ? g.key : "—", g.items.map((s: any) => ({ name: s.product_name, qty: s.qty, price: s.price, discount: s.discount })), g.cust, g.pay, settings, bname(g.br), 0);
   const exportCsv = () => downloadExcel("sales-bills", ["Bill", "Date", "Branch", "Customer", "Payment", "Staff", "Items", "Total"],
     bills.map((g) => [g.key, dateStr(g.t) + " " + timeStr(g.t), bmap[g.br] || "", g.cust, g.pay.toUpperCase(), staffMap[g.staff] || "", g.items.length, g.total]));
 
+  if (isMobile) {
+    const filtered = q.trim() ? bills.filter((g) => (g.key + g.cust).toLowerCase().includes(q.toLowerCase())) : bills;
+    return (
+      <>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h1 className="page-title" style={{ fontSize: 20, margin: 0 }}>Sales History</h1>
+          <button className="edit-btn" onClick={exportCsv}>Export</button>
+        </div>
+        <input className="search" style={{ width: "100%", marginBottom: 10 }} placeholder="Search by bill # or customer" value={q} onChange={(e) => setQ(e.target.value)} />
+        <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 14, paddingBottom: 2 }}>
+          {(["all", "cash", "upi", "credit"] as const).map((m) => (
+            <button key={m} className={"pay-opt" + (payFilter === m ? " active" : "")} style={{ flexShrink: 0, width: "auto", padding: "8px 16px" }} onClick={() => setPayFilter(m)}>{m === "all" ? "All Modes" : m.toUpperCase()}</button>
+          ))}
+        </div>
+        {filtered.length ? filtered.map((g) => (
+          <div className="card card-pad" key={g.key} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <b>{g.key.startsWith("B-") ? g.key : "—"}</b>
+                  <span className="b-tag">{bmap[g.br]}</span>
+                </div>
+                <div className="sub">{dateStr(g.t)} · {timeStr(g.t)}</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <b style={{ fontSize: 16, color: "var(--accent)" }}>{money(g.total)}</b>
+                <div className="sub">via {g.pay.toUpperCase()}</div>
+              </div>
+            </div>
+            <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--line-2)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span className="sub">{g.cust} · {g.items.length} item{g.items.length === 1 ? "" : "s"}</span>
+              <span className="sub">{staffMap[g.staff] || "—"}</span>
+            </div>
+          </div>
+        )) : <div className="card card-pad"><div className="empty">No bills found.</div></div>}
+      </>
+    );
+  }
+
   return (
-    <><h1 className="page-title">Sales / Bill History</h1><p className="page-sub">Every bill across both branches — reprint any invoice.</p>
+    <><h1 className="page-title">Sales / Bill History</h1><p className="page-sub">Every bill across both branches.</p>
       <div className="card">
         <div className="card-head">
           <div className="seg">{(["all", "cash", "upi", "credit"] as const).map((m) => <button key={m} className={payFilter === m ? "active" : ""} onClick={() => setPayFilter(m)}>{m === "all" ? "All" : m.toUpperCase()}</button>)}</div>
           <button className="edit-btn" onClick={exportCsv}>Export CSV</button>
         </div>
         <div className="table-wrap"><table>
-          <thead><tr><th>Bill</th><th>Date</th><th>Branch</th><th>Customer</th><th>Payment</th><th>Staff</th><th className="r">Total</th><th className="r"></th></tr></thead>
+          <thead><tr><th>Bill</th><th>Date</th><th>Branch</th><th>Customer</th><th>Payment</th><th>Staff</th><th className="r">Total</th></tr></thead>
           <tbody>{bills.length ? bills.map((g) => (
             <tr key={g.key}>
               <td>{g.key.startsWith("B-") ? g.key : "—"}<div style={{ color: "var(--faint)", fontSize: 11 }}>{g.items.length} item{g.items.length === 1 ? "" : "s"}</div></td>
               <td>{dateStr(g.t)} {timeStr(g.t)}</td><td><span className="b-tag">{bmap[g.br]}</span></td>
               <td>{g.cust}</td><td><span className="badge role">{g.pay.toUpperCase()}</span></td><td>{staffMap[g.staff] || "—"}</td>
               <td className="r amt in">{money(g.total)}</td>
-              <td className="r"><button className="edit-btn" onClick={() => reprint(g)}>🖨 Reprint</button></td>
             </tr>
-          )) : <tr><td colSpan={8}><div className="empty">No bills in this period.</div></td></tr>}</tbody>
+          )) : <tr><td colSpan={7}><div className="empty">No bills in this period.</div></td></tr>}</tbody>
         </table></div>
       </div></>
   );
@@ -743,7 +977,7 @@ function SettingsPage({ settings, onSync, branches }: any) {
     <><h1 className="page-title">Settings</h1><p className="page-sub">Company profile, staff & system.</p>
 
       <div className="card card-pad">
-        <h3 style={{ margin: "0 0 14px" }}>Company profile <span style={{ color: "var(--faint)", fontWeight: 400, fontSize: 12 }}>(shown on printed invoices)</span></h3>
+        <h3 style={{ margin: "0 0 14px" }}>Company profile</h3>
         <div className="form-grid">
           <div className="qty-row">
             <div className="field"><label>Company name</label><input value={co.company ?? ""} onChange={(e) => setCo({ ...co, company: e.target.value })} placeholder="Shop name" /></div>
