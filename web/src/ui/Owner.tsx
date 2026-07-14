@@ -122,9 +122,10 @@ export function Owner(p: SharedProps) {
             )}
           </div>
           <div className="header-right">
-            <span className={"sync-pill " + (pending > 0 ? "pending" : "ok")}><span className="dot" />{pending > 0 ? `${pending} to sync` : "All synced"}</span>
+            <span className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} title={p.syncError || undefined}><span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? `${pending} to sync` : "All synced"}</span>
+            <button className="hbtn" onClick={p.onSync} title="Refresh now"><Icon name="refresh" size={18} /></button>
             <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
-            <button className="hbtn" onClick={p.onLogout} title="Sign out"><Icon name="settings" size={18} /></button>
+            <button className="hbtn" onClick={p.onLogout} title="Sign out"><Icon name="logout" size={18} /></button>
             <div className="avatar" title={p.profile.name}>{initials(p.profile.name)}</div>
           </div>
         </div>

@@ -20,7 +20,6 @@ type Tab = "dashboard" | "sale" | "purchase" | "bills" | "customers" | "ledger" 
 
 export function Staff(p: SharedProps) {
   const [tab, setTab] = useState<Tab>("dashboard");
-  const [showAccount, setShowAccount] = useState(false);
   const [showPw, setShowPw] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const branchId = p.profile.branch_id!;
@@ -40,6 +39,10 @@ export function Staff(p: SharedProps) {
   ];
 
   const go = (t: Tab) => { setTab(t); setShowMenu(false); };
+  const doLogout = () => {
+    setShowMenu(false);
+    if (window.confirm("Sign out of this device?")) p.onLogout();
+  };
 
   return (
     <>
@@ -53,7 +56,6 @@ export function Staff(p: SharedProps) {
             <span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? pending : "Synced"}
           </span>
           <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
-          <button className="hbtn" style={{ width: 34, height: 34 }} onClick={() => setShowAccount(true)}><Icon name="settings" size={16} /></button>
         </div>
       </div>
       {p.syncError && (
@@ -81,25 +83,26 @@ export function Staff(p: SharedProps) {
       {showMenu && (
         <div className="drawer-scrim" onClick={() => setShowMenu(false)}>
           <div className="drawer" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-head"><h3>Menu</h3><button className="hbtn" style={{ width: 30, height: 30 }} onClick={() => setShowMenu(false)}>✕</button></div>
-            <div className="modal-body" style={{ padding: 10 }}>
+            <div className="modal-head">
+              <div><h3 style={{ margin: 0 }}>{p.profile.name}</h3><span style={{ fontSize: 12, color: "var(--muted)" }}>{branchName}</span></div>
+              <button className="hbtn" style={{ width: 30, height: 30 }} onClick={() => setShowMenu(false)}>✕</button>
+            </div>
+            <div className="modal-body" style={{ padding: 10, flex: 1, display: "flex", flexDirection: "column" }}>
               {menuItems.map(([t, label, ic]) => (
                 <button key={t} className={"nav-item" + (tab === t ? " active" : "")} onClick={() => go(t)}>
                   <Icon name={ic} size={19} /><span>{label}</span>
                 </button>
               ))}
+              <div className="nav-sep" />
+              <button className="nav-item" onClick={() => { setShowMenu(false); setShowPw(true); }}>
+                <Icon name="settings" size={19} /><span>Change password</span>
+              </button>
+              <button className="nav-item" style={{ color: "var(--red)", marginTop: "auto" }} onClick={doLogout}>
+                <Icon name="logout" size={19} /><span>Logout</span>
+              </button>
             </div>
           </div>
         </div>
-      )}
-      {showAccount && (
-        <Modal title="Account" onClose={() => setShowAccount(false)}>
-          <div className="form-grid">
-            <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Signed in as <b>{p.profile.name}</b></p>
-            <button className="btn ghost" onClick={() => { setShowAccount(false); setShowPw(true); }}>Change password</button>
-            <button className="btn" style={{ background: "var(--red)" }} onClick={p.onLogout}>Sign out</button>
-          </div>
-        </Modal>
       )}
       {showPw && <ChangePasswordModal onClose={() => setShowPw(false)} />}
     </>
@@ -317,89 +320,108 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
   );
 }
 
-/* ---------- Sale (New Bill) ---------- */
+/* ---------- Sale (New Bill / Previous Bills) ---------- */
 type DiscType = "none" | "5" | "10" | "custom" | "flat";
+type CartLine = CartItem & { box: number; pcs: number; perBox: number; unit: string };
 
 function BillingForm({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
+  const [billTab, setBillTab] = useState<"new" | "previous">("new");
+  return (
+    <>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <h1 className="page-title" style={{ fontSize: 22, margin: 0 }}>New Bill</h1>
+      </div>
+      <div className="seg" style={{ marginBottom: 14, width: "100%" }}>
+        <button className={billTab === "new" ? "active" : ""} style={{ flex: 1 }} onClick={() => setBillTab("new")}>New Bill</button>
+        <button className={billTab === "previous" ? "active" : ""} style={{ flex: 1 }} onClick={() => setBillTab("previous")}>Previous Bills</button>
+      </div>
+      {billTab === "new"
+        ? <NewBillForm branchId={branchId} shared={shared} branchName={branchName} />
+        : <PreviousBills branchId={branchId} shared={shared} branchName={branchName} />}
+    </>
+  );
+}
+
+function NewBillForm({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
   const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
   const branchSales = useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []);
   const branchPurch = useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []);
   const customers = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const settings = useLiveQuery(() => localdb.settings.get("main"), [], undefined);
 
-  // Product search (our card/list style, not a native <select>)
-  const [pq, setPq] = useState("");
-  const [showPd, setShowPd] = useState(false);
-  const [pid, setPid] = useState("");
-  const [pActive, setPActive] = useState(0); // keyboard-highlighted row in the dropdown
-  const selected = products.find((x) => x.id === pid);
-  const stock = selected ? computeStock(selected.id, branchId, branchSales, branchPurch) : 0;
-  const perBox = selected?.pieces_per_box || 0;
-  const productInputRef = useRef<HTMLInputElement>(null);
-  const qtyInputRef = useRef<HTMLInputElement>(null);
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
 
-  const [box, setBox] = useState(0);
-  const [pcs, setPcs] = useState(1);
-  const [price, setPrice] = useState(0);
-  const [discType, setDiscType] = useState<DiscType>("none");
-  const [discCustom, setDiscCustom] = useState(0);
-  const [discFlat, setDiscFlat] = useState(0);
-
-  const totalQty = (Number(box) || 0) * (perBox || 0) + (Number(pcs) || 0);
-  const discountType: "percent" | "flat" | undefined = discType === "flat" ? "flat" : discType === "none" ? undefined : "percent";
-  const discountValue = discType === "custom" ? discCustom : discType === "flat" ? discFlat : discType === "none" ? 0 : Number(discType);
-
-  const [cart, setCart] = useState<CartItem[]>([]);
-
-  // Customer name — dropdown of saved customers, but still free text for new ones.
+  // Customer — dropdown of saved customers, still free text for new ones.
   const [cust, setCust] = useState("");
   const [showCustDd, setShowCustDd] = useState(false);
   const custMatches = customers.filter((c) => c.name.toLowerCase().includes(cust.trim().toLowerCase())).slice(0, 8);
 
-  // Payment
-  const [payMode, setPayMode] = useState<"cash" | "upi" | "both" | "credit">("cash");
-  const [cashAmt, setCashAmt] = useState<number | "">("");
-  const [upiAmt, setUpiAmt] = useState<number | "">("");
-  const [paidFull, setPaidFull] = useState(true); // true = fully paid now
-  const [partialAmt, setPartialAmt] = useState<number | "">("");
-  const [saving, setSaving] = useState(false);
-
+  // Product search — selecting a match adds it to the bill immediately
+  // (1 pc, at its listed price). Box/Pcs and discount are then adjusted
+  // per-item in the Added Items list below — no separate "add" step.
+  const [pq, setPq] = useState("");
+  const [showPd, setShowPd] = useState(false);
+  const [pActive, setPActive] = useState(0);
+  const productInputRef = useRef<HTMLInputElement>(null);
   const pMatches = products.filter((pr) => pr.name.toLowerCase().includes(pq.toLowerCase())).slice(0, 30);
-  const selectProduct = (pr: typeof products[number]) => {
-    setPid(pr.id); setPq(pr.name); setShowPd(false); setPActive(0);
-    setPrice(pr.sale_price); setBox(0); setPcs(1);
-    // Jump straight to quantity so the next keystroke is "how many", not a
-    // separate click — this is the whole point of the search-then-add flow.
-    setTimeout(() => qtyInputRef.current?.focus(), 0);
+
+  const [cart, setCart] = useState<CartLine[]>([]);
+
+  const addProduct = (pr: typeof products[number]) => {
+    const perBox = pr.pieces_per_box || 0;
+    setCart((c) => {
+      // Same product tapped again — just bump its pcs by 1 instead of a duplicate row.
+      const idx = c.findIndex((x) => x.product_id === pr.id && !x.discountValue);
+      if (idx >= 0) {
+        const next = [...c];
+        next[idx] = { ...next[idx], pcs: next[idx].pcs + 1, qty: next[idx].qty + 1 };
+        return next;
+      }
+      return [...c, {
+        product_id: pr.id, name: pr.name, qty: 1, price: pr.sale_price,
+        discountType: undefined, discountValue: 0, box: 0, pcs: 1, perBox, unit: pr.unit,
+      }];
+    });
+    setPq(""); setShowPd(false); setPActive(0);
+    setTimeout(() => productInputRef.current?.focus(), 0);
   };
   const onProductKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     if (!showPd || pMatches.length === 0) return;
     if (e.key === "ArrowDown") { e.preventDefault(); setPActive((i) => Math.min(i + 1, pMatches.length - 1)); }
     else if (e.key === "ArrowUp") { e.preventDefault(); setPActive((i) => Math.max(i - 1, 0)); }
-    else if (e.key === "Enter") { e.preventDefault(); selectProduct(pMatches[pActive] ?? pMatches[0]); }
+    else if (e.key === "Enter") { e.preventDefault(); addProduct(pMatches[pActive] ?? pMatches[0]); }
   };
 
-  const { lineTotal } = computeLineTotal(totalQty, price, discountType, discountValue);
-  const cartTotal = cart.reduce((a, c) => a + computeLineTotal(c.qty, c.price, c.discountType, c.discountValue).lineTotal, 0);
+  const setLine = (i: number, patch: Partial<CartLine>) => setCart((c) => c.map((x, k) => k === i ? { ...x, ...patch } : x));
+  const bump = (i: number, field: "box" | "pcs", delta: number) => setCart((c) => c.map((x, k) => {
+    if (k !== i) return x;
+    const box = field === "box" ? Math.max(0, x.box + delta) : x.box;
+    const pcs = field === "pcs" ? Math.max(0, x.pcs + delta) : x.pcs;
+    return { ...x, box, pcs, qty: box * (x.perBox || 0) + pcs };
+  }));
+  const removeItem = (i: number) => setCart((c) => c.filter((_, k) => k !== i));
+
+  // Bill-level discount (applies as a single line at the bottom, matching
+  // the reference design's "Discount: None ▾" under the totals, not per item).
+  const [discType, setDiscType] = useState<DiscType>("none");
+  const [discCustom, setDiscCustom] = useState(0);
+  const [discFlat, setDiscFlat] = useState(0);
+  const billDiscountType: "percent" | "flat" | undefined = discType === "flat" ? "flat" : discType === "none" ? undefined : "percent";
+  const billDiscountValue = discType === "custom" ? discCustom : discType === "flat" ? discFlat : discType === "none" ? 0 : Number(discType);
+
+  const subtotal = cart.reduce((a, c) => a + c.qty * c.price, 0);
+  const { lineTotal: cartTotal, discountAmt: billDiscountAmt } = computeLineTotal(1, subtotal, billDiscountType, billDiscountValue);
+
+  // Payment
+  const [payMode, setPayMode] = useState<"cash" | "upi" | "both" | "credit">("cash");
+  const [cashAmt, setCashAmt] = useState<number | "">("");
+  const [upiAmt, setUpiAmt] = useState<number | "">("");
+  const [paidFull, setPaidFull] = useState(true);
+  const [partialAmt, setPartialAmt] = useState<number | "">("");
+  const [saving, setSaving] = useState(false);
 
   const today = rangeStart("today");
   const todayTotal = sum(live(branchSales).filter((s) => new Date(s.created_at).getTime() >= today), "total");
-
-  const addItem = () => {
-    if (!selected) return toast("Search and select a product");
-    if (!totalQty || totalQty <= 0) return toast("Enter a quantity (box and/or pcs)");
-    setCart((c) => [...c, { product_id: selected.id, name: selected.name, qty: totalQty, price, discountType, discountValue }]);
-    setPid(""); setPq(""); setBox(0); setPcs(1); setDiscType("none"); setDiscCustom(0); setDiscFlat(0);
-    // Back to product search immediately — ready for the next item with no
-    // extra click, matching how a cashier actually rings up multiple items.
-    setTimeout(() => productInputRef.current?.focus(), 0);
-  };
-  // Enter in either quantity field adds the item straight away (skips the
-  // separate "+ Add item" click for the common no-discount-editing case).
-  const onQtyKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "Enter") { e.preventDefault(); addItem(); }
-  };
-  const removeItem = (i: number) => setCart((c) => c.filter((_, k) => k !== i));
 
   const amountPaidNow = payMode === "credit" ? 0
     : paidFull ? cartTotal
@@ -409,32 +431,36 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
 
   const save = async (print: boolean) => {
     if (!cart.length) return toast("Add at least one item");
+    if (cart.some((c) => c.qty <= 0)) return toast("Every item needs a quantity greater than 0");
     if (payMode === "both" && (Number(cashAmt) || 0) + (Number(upiAmt) || 0) <= 0) {
       return toast("Enter the cash and/or UPI amount");
     }
     setSaving(true);
-    // When "both" + paid in full but the cash/upi split doesn't quite add up
-    // to the total (rounding, or user only filled one field), the shortfall
-    // is booked as cash so the recorded split always reconciles with the
-    // amount actually marked as paid.
     const splitCash = Number(cashAmt) || 0;
     const splitUpi = Number(upiAmt) || 0;
     const finalCash = payMode === "both" ? (paidFull ? Math.max(splitCash, cartTotal - splitUpi) : splitCash) : undefined;
     const finalUpi = payMode === "both" ? splitUpi : undefined;
+
+    // Bill-level discount is folded into the first item so createSaleBill's
+    // per-item total still adds up to the discounted grand total exactly.
+    const items: CartItem[] = cart.map((c, i) => {
+      if (i !== 0 || !billDiscountAmt) return { product_id: c.product_id, name: c.name, qty: c.qty, price: c.price };
+      return { product_id: c.product_id, name: c.name, qty: c.qty, price: c.price, discountType: "flat", discountValue: billDiscountAmt };
+    });
+
     const { billNo, due } = await createSaleBill(branchId, shared.profile.id, cust, {
-      mode: payMode, amountPaid: amountPaidNow,
-      cashAmount: finalCash, upiAmount: finalUpi,
-    }, cart);
+      mode: payMode, amountPaid: amountPaidNow, cashAmount: finalCash, upiAmount: finalUpi,
+    }, items);
     setSaving(false);
-    if (print) printItemizedBill(billNo, cart.map((c) => ({ name: c.name, qty: c.qty, price: c.price, discountType: c.discountType, discountValue: c.discountValue })), cust.trim() || "Walk-in", payMode, settings, branchName, amountPaidNow);
+    if (print) printItemizedBill(billNo, cart.map((c) => ({ name: c.name, qty: c.qty, price: c.price })), cust.trim() || "Walk-in", payMode, settings, branchName, amountPaidNow);
     toast(`Bill ${billNo} saved` + (due > 0 ? ` — ${money(due)} due` : "") + (shared.online ? "" : " offline"));
-    setCart([]); setCust(""); setPayMode("cash"); setCashAmt(""); setUpiAmt(""); setPaidFull(true); setPartialAmt(""); shared.onSync();
+    setCart([]); setCust(""); setDiscType("none"); setDiscCustom(0); setDiscFlat(0);
+    setPayMode("cash"); setCashAmt(""); setUpiAmt(""); setPaidFull(true); setPartialAmt(""); shared.onSync();
   };
 
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-        <h1 className="page-title" style={{ fontSize: 22 }}>New Bill</h1>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
         <span style={{ fontSize: 13, color: "var(--muted)" }}>Today: <b style={{ color: "var(--green)" }}>{money(todayTotal)}</b></span>
       </div>
 
@@ -457,77 +483,104 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
             </div>
           )}
         </div>
+        <div className="field" style={{ marginTop: 14, marginBottom: 0 }}>
+          <label>Date</label>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
       </div>
 
-      {/* Product search */}
+      {/* Product search — tap a result and it's added instantly */}
       <div className="card card-pad">
-        <div className="form-grid">
-          <div className="field" style={{ position: "relative" }}>
-            <label>Product</label>
-            <input ref={productInputRef} className="search" style={{ width: "100%" }} value={pq}
-              onChange={(e) => { setPq(e.target.value); setShowPd(true); setPid(""); setPActive(0); }}
-              onFocus={() => setShowPd(true)} onBlur={() => setTimeout(() => setShowPd(false), 150)}
-              onKeyDown={onProductKeyDown}
-              placeholder="Search or type a product, then press Enter…" />
-            {showPd && pMatches.length > 0 && (
-              <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 260, overflowY: "auto", marginTop: 4 }}>
-                {pMatches.map((pr, i) => (
-                  <div key={pr.id} className="row" style={{ padding: "10px 14px", cursor: "pointer", background: i === pActive ? "var(--surface-2)" : undefined }}
-                    onMouseEnter={() => setPActive(i)} onMouseDown={() => selectProduct(pr)}>
-                    <div><div className="main">{pr.name}</div><div className="sub">{money(pr.sale_price)}/{pr.unit}{pr.pieces_per_box ? ` · 1 box = ${pr.pieces_per_box} pcs` : ""}</div></div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {selected && <div className="stock-hint">In stock: <b className={stock <= (selected.low_stock_at ?? 5) ? "low" : ""}>{stock} {selected.unit}</b> · Enter quantity below, press Enter to add</div>}
-          </div>
-
-          {selected && (
-            <>
-              <div className="qty-row" style={{ gridTemplateColumns: perBox ? "1fr 1fr" : "1fr" }}>
-                {perBox > 0 && (
-                  <div className="field"><label>Box (1 box = {perBox} pcs)</label><input type="number" inputMode="numeric" min={0} value={box} onChange={(e) => setBox(+e.target.value)} onKeyDown={onQtyKeyDown} /></div>
-                )}
-                <div className="field"><label>Pcs</label><input ref={qtyInputRef} type="number" inputMode="numeric" min={0} value={pcs} onChange={(e) => setPcs(+e.target.value)} onFocus={(e) => e.target.select()} onKeyDown={onQtyKeyDown} /></div>
-              </div>
-              <div className="qty-row">
-                <div className="field"><label>Price each</label><input type="number" inputMode="numeric" value={price} onChange={(e) => setPrice(+e.target.value)} /></div>
-                <div className="field"><label>Discount</label>
-                  <select value={discType} onChange={(e) => setDiscType(e.target.value as DiscType)}>
-                    <option value="none">None</option>
-                    <option value="5">5%</option>
-                    <option value="10">10%</option>
-                    <option value="custom">Custom %</option>
-                    <option value="flat">Flat ₹</option>
-                  </select>
+        <div className="field" style={{ position: "relative", marginBottom: 0 }}>
+          <input ref={productInputRef} className="search" style={{ width: "100%" }} value={pq}
+            onChange={(e) => { setPq(e.target.value); setShowPd(true); setPActive(0); }}
+            onFocus={() => setShowPd(true)} onBlur={() => setTimeout(() => setShowPd(false), 150)}
+            onKeyDown={onProductKeyDown}
+            placeholder="Search products…" />
+          {showPd && pMatches.length > 0 && (
+            <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 280, overflowY: "auto", marginTop: 4 }}>
+              {pMatches.map((pr, i) => (
+                <div key={pr.id} className="row" style={{ padding: "10px 14px", cursor: "pointer", background: i === pActive ? "var(--surface-2)" : undefined }}
+                  onMouseEnter={() => setPActive(i)} onMouseDown={() => addProduct(pr)}>
+                  <div><div className="main">{pr.name}</div><div className="sub">{money(pr.sale_price)}/{pr.unit}{pr.pieces_per_box ? ` · 1 box = ${pr.pieces_per_box} pcs` : ""}</div></div>
                 </div>
-              </div>
-              {discType === "custom" && <div className="field"><label>Custom discount %</label><input type="number" inputMode="numeric" value={discCustom} onChange={(e) => setDiscCustom(+e.target.value)} /></div>}
-              {discType === "flat" && <div className="field"><label>Flat discount ₹</label><input type="number" inputMode="numeric" value={discFlat} onChange={(e) => setDiscFlat(+e.target.value)} /></div>}
-              <div style={{ fontSize: 13, color: "var(--muted)" }}>Qty {totalQty || 0} · Line total <b style={{ color: "var(--text)" }}>{money(lineTotal)}</b></div>
-              <button className="btn ghost" onClick={addItem}>+ Add item to bill</button>
-            </>
+              ))}
+            </div>
           )}
         </div>
       </div>
 
-      <div className="card">
-        <div className="card-head"><h3>Bill items ({cart.length})</h3><b>{money(cartTotal)}</b></div>
-        <div className="card-pad" style={{ paddingTop: 6 }}>
-          {cart.length ? cart.map((c, i) => {
-            const { lineTotal: lt, discountAmt } = computeLineTotal(c.qty, c.price, c.discountType, c.discountValue);
-            return (
-              <div className="row" key={i}><div><div className="main">{c.name} × {c.qty}</div>
-                <div className="sub">{money(c.price)} each{discountAmt ? ` · ${c.discountType === "flat" ? "-" + money(discountAmt) : c.discountValue + "% off"}` : ""}</div></div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}><div className="amt in">{money(lt)}</div><button className="del-btn" onClick={() => removeItem(i)}>✕</button></div></div>
-            );
-          }) : <div className="empty">No items yet. Search and add a product above.</div>}
-        </div>
-      </div>
+      {/* Added items */}
+      <h3 style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--muted)", margin: "18px 0 8px" }}>Added Items</h3>
+      {cart.length ? cart.map((c, i) => {
+        const { lineTotal: lt } = computeLineTotal(c.qty, c.price, undefined, 0);
+        return (
+          <div className="card card-pad" key={i} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <div className="main" style={{ fontWeight: 700 }}>{c.name} ({c.qty})</div>
+                <div className="sub">Rate: {money(c.price)}{c.perBox ? ` · 1 box = ${c.perBox} pcs` : ""}</div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <b style={{ color: "var(--accent)" }}>{money(lt)}</b>
+                <button className="del-btn" onClick={() => removeItem(i)}><Icon name="trash" size={14} /></button>
+              </div>
+            </div>
+            <div className="qty-row" style={{ gridTemplateColumns: c.perBox ? "1fr 1fr" : "1fr", marginTop: 12 }}>
+              {c.perBox > 0 && (
+                <div>
+                  <label style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>Box</label>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                    <button className="edit-btn" style={{ width: 32, height: 32, padding: 0 }} onClick={() => bump(i, "box", -1)}><Icon name="minus" size={14} /></button>
+                    <span style={{ minWidth: 24, textAlign: "center", fontWeight: 700 }}>{c.box}</span>
+                    <button className="edit-btn" style={{ width: 32, height: 32, padding: 0 }} onClick={() => bump(i, "box", 1)}><Icon name="plus" size={14} /></button>
+                  </div>
+                </div>
+              )}
+              <div>
+                <label style={{ fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>Pcs</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 4 }}>
+                  <button className="edit-btn" style={{ width: 32, height: 32, padding: 0 }} onClick={() => bump(i, "pcs", -1)}><Icon name="minus" size={14} /></button>
+                  <span style={{ minWidth: 24, textAlign: "center", fontWeight: 700 }}>{c.pcs}</span>
+                  <button className="edit-btn" style={{ width: 32, height: 32, padding: 0 }} onClick={() => bump(i, "pcs", 1)}><Icon name="plus" size={14} /></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }) : <div className="card card-pad"><div className="empty">No items yet. Search a product above to add it.</div></div>}
 
       {cart.length > 0 && (
-        <div className="card card-pad">
-          <div className="form-grid">
+        <>
+          {/* Totals */}
+          <div className="card card-pad">
+            <div className="row" style={{ padding: "6px 0" }}><span className="sub">Subtotal</span><b>{money(subtotal)}</b></div>
+            <div className="row" style={{ padding: "6px 0" }}>
+              <span className="sub">Discount</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <select value={discType} onChange={(e) => setDiscType(e.target.value as DiscType)} style={{ width: "auto" }}>
+                  <option value="none">None</option>
+                  <option value="5">5%</option>
+                  <option value="10">10%</option>
+                  <option value="custom">Custom %</option>
+                  <option value="flat">Flat ₹</option>
+                </select>
+                {billDiscountAmt > 0 && <span className="amt out">-{money(billDiscountAmt)}</span>}
+              </div>
+            </div>
+            {discType === "custom" && (
+              <div className="field" style={{ marginTop: 4 }}><label>Custom discount %</label><input type="number" inputMode="numeric" value={discCustom} onChange={(e) => setDiscCustom(+e.target.value)} /></div>
+            )}
+            {discType === "flat" && (
+              <div className="field" style={{ marginTop: 4 }}><label>Flat discount ₹</label><input type="number" inputMode="numeric" value={discFlat} onChange={(e) => setDiscFlat(+e.target.value)} /></div>
+            )}
+            <div className="row" style={{ padding: "10px 0 0", borderTop: "1px solid var(--line)", marginTop: 6 }}>
+              <b style={{ fontSize: 15 }}>Grand Total</b><b style={{ fontSize: 18, color: "var(--accent)" }}>{money(cartTotal)}</b>
+            </div>
+          </div>
+
+          {/* Payment */}
+          <div className="card card-pad">
             <div className="field"><label>Payment mode</label>
               <div className="pay-select">
                 {(["cash", "upi", "both", "credit"] as const).map((m) => (
@@ -559,17 +612,59 @@ function BillingForm({ branchId, shared, branchName }: { branchId: string; share
               <div style={{ fontSize: 12.5, color: "var(--muted)" }}>Cash + UPI entered above is treated as the partial amount received now.</div>
             )}
 
-            <div className="total-preview">{money(cartTotal)}</div>
-            {dueNow > 0 && <div style={{ textAlign: "center", color: "var(--red)", fontWeight: 700, fontSize: 14 }}>Due after this bill: {money(dueNow)}</div>}
+            {dueNow > 0 && <div style={{ textAlign: "center", color: "var(--red)", fontWeight: 700, fontSize: 14, marginTop: 4 }}>Due after this bill: {money(dueNow)}</div>}
+          </div>
+        </>
+      )}
 
-            <div className="btn-row">
-              <button className="btn ghost" onClick={() => save(false)} disabled={saving}>Save Bill</button>
-              <button className="btn" onClick={() => save(true)} disabled={saving}>Save &amp; Print</button>
+      <div className="btn-row" style={{ marginTop: 4 }}>
+        <button className="btn ghost" onClick={() => save(false)} disabled={saving || !cart.length}>Save Bill</button>
+        <button className="btn" onClick={() => save(true)} disabled={saving || !cart.length}><Icon name="bill" size={16} /> Save &amp; Print</button>
+      </div>
+    </>
+  );
+}
+
+/* Previous Bills — past sales for this branch, grouped by bill_no, with reprint. */
+function PreviousBills({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
+  const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const settings = useLiveQuery(() => localdb.settings.get("main"), [], undefined);
+  const [q, setQ] = useState("");
+
+  const groups = useMemo(() => {
+    const map = new Map<string, { billNo: string; items: typeof sales; total: number; customer: string; date: string; pay: string }>();
+    for (const s of sales) {
+      const key = s.bill_no || s.id;
+      if (!map.has(key)) map.set(key, { billNo: key, items: [], total: 0, customer: s.customer_name || "Walk-in", date: s.created_at, pay: s.payment_mode || "cash" });
+      const g = map.get(key)!;
+      g.items.push(s); g.total += s.total;
+    }
+    return [...map.values()]
+      .filter((g) => g.billNo.toLowerCase().includes(q.toLowerCase()) || g.customer.toLowerCase().includes(q.toLowerCase()))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [sales, q]);
+
+  const reprint = (g: typeof groups[number]) => {
+    printItemizedBill(g.billNo, g.items.map((s) => ({ name: s.product_name, qty: s.qty, price: s.price })), g.customer, g.pay, settings, branchName, g.total);
+  };
+
+  return (
+    <div className="card">
+      <div className="card-head"><h3>Previous bills</h3><input className="search" placeholder="Search bill # or customer…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+      <div className="card-pad" style={{ paddingTop: 6 }}>
+        {groups.length ? groups.map((g) => (
+          <div className="row" key={g.billNo}>
+            <div><div className="main">{g.billNo.startsWith(g.customer) ? g.billNo : `Bill #${g.billNo}`}</div>
+              <div className="sub">{g.customer} · {dateStr(g.date)} · {g.items.length} item{g.items.length === 1 ? "" : "s"} · {g.pay.toUpperCase()}</div></div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <b>{money(g.total)}</b>
+              <button className="edit-btn" onClick={() => reprint(g)}><Icon name="bill" size={14} /> Print</button>
             </div>
           </div>
-        </div>
-      )}
-    </>
+        )) : <div className="empty">No bills yet.</div>}
+      </div>
+      {!shared && null}
+    </div>
   );
 }
 

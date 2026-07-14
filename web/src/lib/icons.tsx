@@ -12,6 +12,12 @@ const paths: Record<string, string> = {
   bell: "M6 9a6 6 0 1 1 12 0c0 5 2 6 2 6H4s2-1 2-6M10 20a2 2 0 0 0 4 0",
   day: "M3 4h18v17H3zM3 9h18M8 2v4M16 2v4",
   menu: "M4 6h16M4 12h16M4 18h16",
+  logout: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9",
+  refresh: "M21 12a9 9 0 1 1-3-6.7M21 4v5h-5",
+  plus: "M12 5v14M5 12h14",
+  minus: "M5 12h14",
+  trash: "M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6h16z",
+  check: "M20 6 9 17l-5-5",
 };
 
 export function Icon({ name, size = 19 }: { name: string; size?: number }) {
