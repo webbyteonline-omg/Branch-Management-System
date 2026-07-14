@@ -165,7 +165,7 @@ export function Owner(p: SharedProps) {
           {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} products={products} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
           {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
           {view === "products" && <ProductsPage prodAll={prodAll} online={p.online} branches={branches} onSync={p.onSync} />}
-          {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} settings={settings} branches={branches} staffMap={staffMap} isMobile={isMobile} />}
+          {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} branches={branches} staffMap={staffMap} isMobile={isMobile} />}
           {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
           {view === "reports" && <ReportsPage rSales={rSales} range={rangeText} staffMap={staffMap} />}
           {view === "settings" && <SettingsPage settings={settings} onSync={p.onSync} branches={branches} />}
@@ -805,6 +805,11 @@ function InventoryPage({ products, sales, purchases, branches, userId, onSync, i
 
   return (
     <><h1 className="page-title">Inventory</h1><p className="page-sub">Live stock per branch (purchases in − sales out). Adjust for opening stock or wastage.</p>
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+        <Kpi label="Total SKU Items" value={String(products.length)} delta={{ cls: "up", txt: "across catalog" }} icon="boxIcon" color="var(--accent)" bg="var(--accent-soft)" />
+        <Kpi label="Stock Value" value={money(products.reduce((a: number, pr: any) => a + brs.reduce((s: number, b: any) => s + computeStock(pr.id, b.id, sales, purchases), 0) * pr.sale_price, 0))} delta={{ cls: "up", txt: "live valuation" }} icon="wallet" color="var(--green)" bg="var(--green-soft)" />
+        <Kpi label="Out of Stock" value={String(products.filter((pr: any) => brs.reduce((s: number, b: any) => s + computeStock(pr.id, b.id, sales, purchases), 0) <= 0).length)} delta={{ cls: "down", txt: "items" }} icon="warning" color="var(--red)" bg="var(--red-soft)" />
+      </div>
       <div className="card"><div className="table-wrap"><table>
         <thead><tr><th>Product</th>{brs.map((b: any) => <th key={b.id} className="r">{shortBranch(b.name)}</th>)}<th className="r">Total</th><th className="r"></th></tr></thead>
         <tbody>
@@ -901,6 +906,11 @@ function SalesHistoryPage({ sales, bmap, branches, staffMap, isMobile }: any) {
 
   return (
     <><h1 className="page-title">Sales / Bill History</h1><p className="page-sub">Every bill across both branches.</p>
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+        <Kpi label="Total Revenue" value={money(bills.reduce((a, g) => a + g.total, 0))} delta={{ cls: "up", txt: "this view" }} icon="sales" color="var(--accent)" bg="var(--accent-soft)" />
+        <Kpi label="Total Bills" value={String(bills.length)} delta={{ cls: "up", txt: "records" }} icon="bill" color="var(--green)" bg="var(--green-soft)" />
+        <Kpi label="Branches Covered" value={String(new Set(bills.map((g) => g.br)).size)} delta={{ cls: "up", txt: "active" }} icon="branch" color="var(--amber)" bg="var(--amber-soft)" />
+      </div>
       <div className="card">
         <div className="card-head">
           <div className="seg">{(["all", "cash", "upi", "credit"] as const).map((m) => <button key={m} className={payFilter === m ? "active" : ""} onClick={() => setPayFilter(m)}>{m === "all" ? "All" : m.toUpperCase()}</button>)}</div>
