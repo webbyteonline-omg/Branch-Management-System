@@ -50,6 +50,8 @@ create table if not exists public.products (
 );
 alter table public.products add column if not exists branch_id text references public.branches(id);
 alter table public.products add column if not exists pieces_per_box numeric(12,2);
+alter table public.products add column if not exists box_price numeric(12,2);       -- independent box sale price (bulk discount), null = not sold by box
+alter table public.products add column if not exists box_cost_price numeric(12,2);  -- cost per box, for margin reporting
 -- id was server-default before; staff now create products offline with a
 -- client-generated uuid, so upsert-by-id must work the same way sales/purchases do.
 alter table public.products alter column id drop default;
@@ -89,6 +91,9 @@ alter table public.sales add column if not exists cash_amount numeric(12,2);
 alter table public.sales add column if not exists upi_amount numeric(12,2);
 alter table public.sales add column if not exists void_at timestamptz;
 alter table public.sales add column if not exists void_snapshot jsonb;
+alter table public.sales add column if not exists box_qty numeric(12,2);   -- informational: boxes in this line (qty still holds total pieces)
+alter table public.sales add column if not exists pcs_qty numeric(12,2);   -- informational: loose pieces in this line
+alter table public.sales add column if not exists box_price numeric(12,2); -- informational: box price used, if any
 
 create table if not exists public.purchases (
   id            uuid primary key,

@@ -15,6 +15,7 @@ import { downloadExcel } from "../lib/excel";
 import { supabase } from "../lib/supabase";
 import { BarChart, Donut } from "./Charts";
 import { AddCustomerModal, AddExpenseModal, AddPurchaseModal } from "./OwnerAdd";
+import { SyncStatusModal } from "./SyncStatus";
 
 type View = "dashboard" | "branch" | "customers" | "ledger" | "purchases" | "inventory" | "products" | "saleshistory" | "daybook" | "reports" | "settings";
 type ORange = Range | "custom";
@@ -55,6 +56,7 @@ export function Owner(p: SharedProps) {
   const [view, setView] = useState<View>("dashboard");
   const [branchId, setBranchId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
+  const [showSync, setShowSync] = useState(false);
 
   const branches = useLiveQuery(() => localdb.branches.toArray(), [], []);
   const salesAll = useLiveQuery(() => localdb.sales.toArray(), [], []);
@@ -133,11 +135,11 @@ export function Owner(p: SharedProps) {
           </div>
           <button className="hbtn hide-desktop" onClick={() => setOpen(true)}><Icon name="menu" /></button>
           <div className="header-right">
-            <button className="hbtn" onClick={p.onSync} title="Sync"><Icon name="sync" size={18} /></button>
-            <button className="hbtn" onClick={p.onSync} title="Refresh now"><Icon name="refresh" size={18} /></button>
-            <span className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} title={p.syncError || undefined}><span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? `${pending} to sync` : "All synced"}</span>
-            <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}>{p.online ? "Online" : "Offline"}</button>
-            <button className="btn" style={{ width: "auto", padding: "9px 18px", borderRadius: 999 }} onClick={p.onLogout}>Logout</button>
+            <button className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync status">
+              <span className="dot" /><span className="hide-mobile">{p.syncError ? "Sync error" : pending > 0 ? `${pending} to sync` : "All synced"}</span>
+            </button>
+            <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline}><span className="hide-mobile">{p.online ? "Online" : "Offline"}</span><span className="show-mobile-inline"><Icon name={p.online ? "cloud" : "warning"} size={15} /></span></button>
+            <button className="btn" style={{ width: "auto", padding: "9px 14px", borderRadius: 999, flexShrink: 0 }} onClick={p.onLogout}>Logout</button>
           </div>
         </div>
 
@@ -567,8 +569,8 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
   };
   const delProd = async (pr: Product) => { if (confirmDelete("product")) { await softDelete("products", pr.id); toast("Deleted"); onSync(); } };
   const restoreProd = async (pr: Product) => { await restoreRow("products", pr.id); toast("Restored"); onSync(); };
-  const exportCsv = () => downloadExcel("products", ["Name", "Branch", "Unit", "Cost", "Sale price", "Low stock at"],
-    rows.map((pr) => [pr.name, pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All", pr.unit, pr.cost_price, pr.sale_price, pr.low_stock_at ?? 5]));
+  const exportCsv = () => downloadExcel("products", ["Name", "Branch", "Unit", "Cost", "Sale price", "Pieces/box", "Box price", "Low stock at"],
+    rows.map((pr) => [pr.name, pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All", pr.unit, pr.cost_price, pr.sale_price, pr.pieces_per_box || "", pr.box_price || "", pr.low_stock_at ?? 5]));
 
   return (
     <><h1 className="page-title">Products</h1><p className="page-sub">Catalog, pricing & branch assignment.</p>
@@ -582,7 +584,7 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
           </div>
         </div>
         <div className="table-wrap"><table>
-          <thead><tr><th>Product</th><th>Branch</th><th>Unit</th><th className="r">Cost</th><th className="r">Sale price</th><th className="r">Low ≤</th><th className="r"></th></tr></thead>
+          <thead><tr><th>Product</th><th>Branch</th><th>Unit</th><th className="r">Cost</th><th className="r">Piece price</th><th className="r">Box price</th><th className="r">Low ≤</th><th className="r"></th></tr></thead>
           <tbody>
             {rows.length ? rows.map((pr: Product) => (
               <tr key={pr.id}>
@@ -591,12 +593,13 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
                 <td>{pr.unit}</td>
                 <td className="r">{money(pr.cost_price)}</td>
                 <td className="r amt in">{money(pr.sale_price)}</td>
+                <td className="r">{pr.pieces_per_box ? (pr.box_price ? money(pr.box_price) : <span style={{ color: "var(--faint)" }}>—</span>) : <span style={{ color: "var(--faint)" }}>n/a</span>}</td>
                 <td className="r">{pr.low_stock_at ?? 5}</td>
                 <td className="r">{showDeleted
                   ? <button className="pay-btn" onClick={() => restoreProd(pr)}>Restore</button>
                   : <><button className="edit-btn" onClick={() => setEdit({ ...pr })}>Edit</button> <button className="del-btn" onClick={() => delProd(pr)}>✕</button></>}</td>
               </tr>
-            )) : <tr><td colSpan={7}><div className="empty">Nothing here.</div></td></tr>}
+            )) : <tr><td colSpan={8}><div className="empty">Nothing here.</div></td></tr>}
           </tbody>
         </table></div>
       </div>
@@ -615,12 +618,18 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
               <div className="field"><label>Low-stock alert ≤</label><input type="number" inputMode="numeric" value={edit.low_stock_at ?? 5} onChange={(e) => setEdit({ ...edit, low_stock_at: +e.target.value })} /></div>
             </div>
             <div className="qty-row">
-              <div className="field"><label>Cost price</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
-              <div className="field"><label>Sale price</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
+              <div className="field"><label>Cost price (per piece)</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
+              <div className="field"><label>Sale price (per piece)</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
             </div>
-            <div className="field"><label>Pieces per box (optional)</label>
-              <input type="number" inputMode="numeric" value={edit.pieces_per_box ?? ""} onChange={(e) => setEdit({ ...edit, pieces_per_box: e.target.value === "" ? null : +e.target.value })} placeholder="e.g. 12 — leave blank if not sold by box" />
+            <div className="field"><label>Pieces per box (leave blank if not sold by box)</label>
+              <input type="number" inputMode="numeric" value={edit.pieces_per_box ?? ""} onChange={(e) => setEdit({ ...edit, pieces_per_box: e.target.value === "" ? null : +e.target.value })} placeholder="e.g. 12" />
             </div>
+            {!!edit.pieces_per_box && (
+              <div className="qty-row">
+                <div className="field"><label>Box cost price (optional)</label><input type="number" inputMode="numeric" value={edit.box_cost_price ?? ""} onChange={(e) => setEdit({ ...edit, box_cost_price: e.target.value === "" ? null : +e.target.value })} placeholder={`default: ${(edit.pieces_per_box || 0) * (edit.cost_price || 0)}`} /></div>
+                <div className="field"><label>Box sale price (optional bulk rate)</label><input type="number" inputMode="numeric" value={edit.box_price ?? ""} onChange={(e) => setEdit({ ...edit, box_price: e.target.value === "" ? null : +e.target.value })} placeholder={`default: ${(edit.pieces_per_box || 0) * (edit.sale_price || 0)}`} /></div>
+              </div>
+            )}
             <div className="btn-row"><button className="btn ghost" onClick={() => setEdit(null)}>Cancel</button><button className="btn" onClick={save}>Save product</button></div>
           </div>
         </Modal>

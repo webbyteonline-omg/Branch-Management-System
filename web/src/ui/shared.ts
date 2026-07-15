@@ -7,6 +7,8 @@ export interface SharedProps {
   onLogout: () => void;
   onSync: () => void;
   syncError?: string | null;
+  syncing?: boolean;
+  lastSyncedAt?: string | null;
 }
 
 export const sum = <T,>(rows: T[], k: keyof T) =>

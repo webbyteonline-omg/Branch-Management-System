@@ -34,6 +34,16 @@
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
   font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 15px; -webkit-font-smoothing: antialiased; overscroll-behavior-y: none; }
+/* Rapid/repeated taps on buttons and other tappable UI must never select
+ * their text — this is a PWA (no native button chrome), so without this the
+ * OS text-selection gesture kicks in on fast double/triple taps. Inputs and
+ * anything explicitly opted in (.selectable) are excluded so text fields and
+ * copyable numbers still work normally. */
+button, .btn, .hbtn, .icon-btn, .tab, .nav-item, .pt-nav-item, .fab, .stepper button,
+.pill-toggle button, .status-pill, .badge, .b-tag, .chip, .tappable, .row,
+a.icon-btn, .seg button, .pay-opt, .net-toggle, .sync-pill, .kpi-card, .stat, .m-stats .stat {
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
 button { font-family: inherit; cursor: pointer; border: none; background: none; }
 input, select { font-family: inherit; font-size: 15px; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -112,6 +122,7 @@ input, select { font-family: inherit; font-size: 15px; }
 @media (max-width: 1100px) { .kpi-grid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 900px) {
   .hide-mobile { display: none; }
+  .show-mobile-inline { display: grid; }
   .kpi-grid { grid-template-columns: 1fr 1fr; }
   .pt-content-head { flex-direction: column; align-items: stretch; }
 }
@@ -168,7 +179,8 @@ input, select { font-family: inherit; font-size: 15px; }
   border-radius: 10px; padding: 3px; }
 .seg button { padding: 7px 14px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--muted); }
 .seg button.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
-.header-right { display: flex; align-items: center; gap: 12px; }
+.header-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+.show-mobile-inline { display: none; }
 .hbtn { width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--line);
   background: var(--surface); color: var(--muted); display: grid; place-items: center; }
 .hbtn:hover { color: var(--text); }
@@ -193,6 +205,18 @@ input, select { font-family: inherit; font-size: 15px; }
 @media (max-width: 900px) {
   .pt-content-head .seg, .pt-content-head input[type="date"] { display: none; }
   .pt-content > .page-title, .pt-content > .page-sub { display: block; }
+}
+
+/* Header on phones: everything must fit on one row with Logout always
+ * visible — no horizontal scroll. Text labels inside the sync-pill and
+ * net-toggle collapse to icon-only, and gaps/padding shrink. */
+@media (max-width: 640px) {
+  .header { padding: 10px 12px; gap: 8px; }
+  .header-right { gap: 6px; }
+  .hbtn { width: 34px; height: 34px; }
+  .sync-pill { padding: 7px 8px; }
+  .net-toggle { padding: 7px 8px; }
+  .btn { padding: 8px 12px !important; font-size: 13px; }
 }
 
 /* stat cards */

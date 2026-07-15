@@ -25,6 +25,17 @@ export function prevRange(r: Range): { from: number; to: number } {
 export const rangeLabel = (r: string) =>
   (({ today: "Today", week: "This Week", month: "This Month" } as Record<string, string>)[r] ?? r);
 
+/** Compact "time ago" for a last-synced timestamp — "Just now", "5m ago", "2h ago", "3d ago". */
+export function timeAgo(t: string | number | null | undefined): string {
+  if (!t) return "Never";
+  const diff = Date.now() - new Date(t).getTime();
+  if (diff < 20_000) return "Just now";
+  if (diff < 60_000) return Math.floor(diff / 1000) + "s ago";
+  if (diff < 3600_000) return Math.floor(diff / 60_000) + "m ago";
+  if (diff < 86400_000) return Math.floor(diff / 3600_000) + "h ago";
+  return Math.floor(diff / 86400_000) + "d ago";
+}
+
 export function pctDelta(now: number, prev: number) {
   if (prev === 0) return now === 0 ? { cls: "flat", txt: "No change" } : { cls: "up", txt: "New activity" };
   const p = ((now - prev) / prev) * 100;

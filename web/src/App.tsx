@@ -15,6 +15,8 @@ export function App() {
   const [manualOffline, setManualOffline] = useState(false);
   const [navOnline, setNavOnline] = useState(navigator.onLine);
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const online = navOnline && !manualOffline;
 
   // ---- auth session ----
@@ -51,6 +53,7 @@ export function App() {
   const lastSyncErrorRef = useRef<string | null>(null);
   const sync = useCallback(async () => {
     if (!profile || !navigator.onLine || manualOffline) return;
+    setSyncing(true);
     try {
       const { pushed, errors } = await pushPending();
       if (errors.length > 0) {
@@ -66,9 +69,12 @@ export function App() {
         lastSyncErrorRef.current = null;
       }
       await pullAll(profile);
+      setLastSyncedAt(new Date().toISOString());
       if (pushed > 0) toast(`${pushed} entr${pushed === 1 ? "y" : "ies"} synced to Head Office`);
     } catch (e) {
       console.error("[sync] unexpected failure:", e);
+    } finally {
+      setSyncing(false);
     }
   }, [profile, manualOffline]);
 
@@ -123,7 +129,7 @@ export function App() {
     );
   }
 
-  const shared = { profile, online, onToggleOnline: toggleOnline, onLogout: logout, onSync: sync, syncError };
+  const shared = { profile, online, onToggleOnline: toggleOnline, onLogout: logout, onSync: sync, syncError, syncing, lastSyncedAt };
   return (
     <ErrorBoundary>
       {profile.role === "owner" ? <Owner {...shared} /> : <Staff {...shared} />}

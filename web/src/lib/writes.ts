@@ -37,6 +37,14 @@ export interface CartItem {
   product_id: string; name: string; qty: number; price: number;
   discountType?: "percent" | "flat"; discountValue?: number;
   discount?: number; // legacy percent-only field, kept for older callers
+  // Box/piece split — when a product has an independent box price, qty×price
+  // no longer equals the true line total, so the caller pre-computes it here.
+  // boxQty/pcsQty are stored on the Sale row purely for display (qty stays
+  // the piece-equivalent total for stock math); price is then back-computed
+  // as a blended per-piece rate so qty×price still equals lineTotalOverride
+  // (keeps the server's check_sale_total trigger satisfied without changes).
+  lineTotalOverride?: number;
+  boxQty?: number; pcsQty?: number; boxPrice?: number;
 }
 
 /** POS billing: saves a multi-item bill as grouped sales rows sharing one
@@ -104,15 +112,29 @@ export async function createSaleBill(
   for (const it of items) {
     const dType = it.discountType ?? (it.discount ? "percent" : undefined);
     const dValue = it.discountValue ?? it.discount ?? 0;
-    const { lineTotal } = computeLineTotal(it.qty, it.price, dType, dValue);
+    let lineTotal: number; let effPrice = it.price;
+    if (it.lineTotalOverride !== undefined) {
+      // Box-priced line: it.price is the piece rate, but the true amount
+      // owed is boxQty×boxPrice + pcsQty×price, not qty×price. Apply the
+      // discount to that real amount, then back-compute a blended per-piece
+      // rate so qty×price still equals the stored total (satisfies the
+      // server's check_sale_total trigger, which only knows qty×price).
+      const gross = it.lineTotalOverride;
+      const discAmt = dType === "flat" ? Math.min(gross, dValue) : gross * dValue / 100;
+      lineTotal = Math.max(0, gross - discAmt);
+      effPrice = it.qty > 0 ? Math.round((lineTotal / it.qty) * 100) / 100 : it.price;
+    } else {
+      lineTotal = computeLineTotal(it.qty, it.price, dType, dValue).lineTotal;
+    }
     total += lineTotal;
     await localdb.sales.add({
       id: uuid(), branch_id: branchId, created_by: userId, product_id: it.product_id,
-      product_name: it.name, customer_name: cust, qty: it.qty, price: it.price, total: lineTotal,
+      product_name: it.name, customer_name: cust, qty: it.qty, price: effPrice, total: lineTotal,
       discount: dType === "percent" ? dValue : 0, discount_type: dType, discount_value: dValue,
       bill_no: billNo, payment_mode: payment.mode,
       cash_amount: payment.mode === "both" ? Number(payment.cashAmount) || 0 : undefined,
       upi_amount: payment.mode === "both" ? Number(payment.upiAmount) || 0 : undefined,
+      box_qty: it.boxQty, pcs_qty: it.pcsQty, box_price: it.boxPrice,
       created_at: now, deleted_at: null, _synced: 0,
     });
   }
@@ -298,6 +320,8 @@ export async function saveProduct(p: Partial<Product> & { name: string }, branch
     id: p.id ?? crypto.randomUUID(),
     name: p.name.trim(), unit: p.unit || "pcs",
     sale_price: Number(p.sale_price) || 0, cost_price: Number(p.cost_price) || 0,
+    box_price: p.box_price ? Number(p.box_price) : null,
+    box_cost_price: p.box_cost_price ? Number(p.box_cost_price) : null,
     low_stock_at: Number(p.low_stock_at ?? 5),
     branch_id: p.branch_id !== undefined ? p.branch_id : (branchId ?? null),
     pieces_per_box: p.pieces_per_box ? Number(p.pieces_per_box) : null, active: true,

@@ -53,3 +53,24 @@ export async function pendingCount(): Promise<number> {
   ]);
   return s + p + c + b + e + pr;
 }
+
+/** Per-table pending breakdown — powers the Sync Status detail view so
+ *  someone can see exactly what's still waiting to reach Head Office. */
+export async function pendingBreakdown(): Promise<{ table: string; label: string; count: number }[]> {
+  const [sales, purchases, customers, bills, expenses, products] = await Promise.all([
+    localdb.sales.where("_synced").equals(0).count(),
+    localdb.purchases.where("_synced").equals(0).count(),
+    localdb.customers.where("_synced").equals(0).count(),
+    localdb.bills.where("_synced").equals(0).count(),
+    localdb.expenses.where("_synced").equals(0).count(),
+    localdb.products.where("_synced").equals(0).count(),
+  ]);
+  return [
+    { table: "sales", label: "Bills / sales", count: sales },
+    { table: "purchases", label: "Purchases", count: purchases },
+    { table: "bills", label: "Udhaar bills", count: bills },
+    { table: "customers", label: "Customers", count: customers },
+    { table: "products", label: "Products", count: products },
+    { table: "expenses", label: "Expenses", count: expenses },
+  ].filter((x) => x.count > 0);
+}

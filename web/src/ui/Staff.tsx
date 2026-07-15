@@ -7,6 +7,7 @@ import { toast } from "./Toast";
 import { Modal } from "./Modal";
 import { LedgerModal } from "./Ledger";
 import { EditCustomerModal, EditEntryModal, EditBillModal, EditBillGroupModal } from "./Edits";
+import { SyncStatusModal } from "./SyncStatus";
 import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, computeLineTotal, settleCustomerDues, saveProduct, voidBill, voidSaleGroup, type CartItem } from "../lib/writes";
 import { sum, live, forTotals, computeStock, productsForBranch, type SharedProps } from "./shared";
 import { BarChart } from "./Charts";
@@ -19,6 +20,7 @@ type Tab = "dashboard" | "sale" | "purchase" | "unpaid" | "previous" | "customer
 export function Staff(p: SharedProps) {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [showMenu, setShowMenu] = useState(false);
+  const [showSync, setShowSync] = useState(false);
   const branchId = p.profile.branch_id!;
   const branches = useLiveQuery(() => localdb.branches.toArray(), [], []);
   const branchName = branches.find((b) => b.id === branchId)?.name ?? "My Branch";
@@ -51,7 +53,7 @@ export function Staff(p: SharedProps) {
         </div>
         <div className="actions">
           <button className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")}
-            style={{ border: "none" }} onClick={p.onSync} title={p.syncError || "Tap to refresh"}>
+            style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync status">
             <span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? `${pending} pending` : "Synced"}
           </button>
         </div>
@@ -110,6 +112,7 @@ export function Staff(p: SharedProps) {
           </div>
         </div>
       )}
+      {showSync && <SyncStatusModal shared={p} onClose={() => setShowSync(false)} />}
     </>
   );
 }
@@ -276,10 +279,13 @@ function StaffProducts({ branchId, shared }: { branchId: string; shared: SharedP
             <div className="main" style={{ fontWeight: 700 }}>{pr.name}{pr._synced === 0 ? " · ⏳" : ""}</div>
             <span className="b-tag">{pr.branch_id ? "This branch" : "All branches"}</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
+          <div style={{ display: "grid", gridTemplateColumns: pr.pieces_per_box ? "1fr 1fr 1fr 1fr" : "1fr 1fr 1fr", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
             <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Unit</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{pr.unit}</div></div>
             <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Cost</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{money(pr.cost_price)}</div></div>
-            <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Sale Price</div><div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--accent)" }}>{money(pr.sale_price)}</div></div>
+            <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Piece Price</div><div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--accent)" }}>{money(pr.sale_price)}</div></div>
+            {!!pr.pieces_per_box && (
+              <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Box Price</div><div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--accent)" }}>{money(pr.box_price || pr.pieces_per_box * pr.sale_price)}</div></div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             <button className="btn ghost" style={{ flex: 1, padding: "9px 0" }} onClick={() => setEdit({ ...pr })}>Edit</button>
@@ -299,12 +305,18 @@ function StaffProducts({ branchId, shared }: { branchId: string; shared: SharedP
               <div className="field"><label>Low-stock alert ≤</label><input type="number" inputMode="numeric" value={edit.low_stock_at ?? 5} onChange={(e) => setEdit({ ...edit, low_stock_at: +e.target.value })} /></div>
             </div>
             <div className="qty-row">
-              <div className="field"><label>Cost price</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
-              <div className="field"><label>Sale price</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
+              <div className="field"><label>Cost price (per piece)</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
+              <div className="field"><label>Sale price (per piece)</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
             </div>
-            <div className="field"><label>Pieces per box (optional)</label>
-              <input type="number" inputMode="numeric" value={edit.pieces_per_box ?? ""} onChange={(e) => setEdit({ ...edit, pieces_per_box: e.target.value === "" ? null : +e.target.value })} placeholder="e.g. 12 — leave blank if not sold by box" />
+            <div className="field"><label>Pieces per box (leave blank if not sold by box)</label>
+              <input type="number" inputMode="numeric" value={edit.pieces_per_box ?? ""} onChange={(e) => setEdit({ ...edit, pieces_per_box: e.target.value === "" ? null : +e.target.value })} placeholder="e.g. 12" />
             </div>
+            {!!edit.pieces_per_box && (
+              <div className="qty-row">
+                <div className="field"><label>Box cost price (optional)</label><input type="number" inputMode="numeric" value={edit.box_cost_price ?? ""} onChange={(e) => setEdit({ ...edit, box_cost_price: e.target.value === "" ? null : +e.target.value })} placeholder={`default: ${(edit.pieces_per_box || 0) * (edit.cost_price || 0)}`} /></div>
+                <div className="field"><label>Box sale price (optional bulk rate)</label><input type="number" inputMode="numeric" value={edit.box_price ?? ""} onChange={(e) => setEdit({ ...edit, box_price: e.target.value === "" ? null : +e.target.value })} placeholder={`default: ${(edit.pieces_per_box || 0) * (edit.sale_price || 0)}`} /></div>
+              </div>
+            )}
             <div className="btn-row"><button className="btn ghost" onClick={() => setEdit(null)}>Cancel</button><button className="btn" onClick={save}>Save product</button></div>
           </div>
         </Modal>
@@ -446,7 +458,11 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
 
 /* ---------- Sale (New Bill / Previous Bills) ---------- */
 type DiscType = "none" | "5" | "10" | "custom" | "flat";
-type CartLine = CartItem & { box: number; pcs: number; perBox: number; unit: string };
+// price = per-piece price (used for the pcs portion). boxPrice = independent
+// box price (used for the box portion) — falls back to perBox × price when
+// the product has no separately-set box price, so bulk-discount pricing is
+// optional per product but never required.
+type CartLine = CartItem & { box: number; pcs: number; perBox: number; unit: string; boxPrice: number };
 
 function NewBillForm({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
   const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
@@ -474,6 +490,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
 
   const addProduct = (pr: typeof products[number]) => {
     const perBox = pr.pieces_per_box || 0;
+    const boxPrice = pr.box_price || (perBox ? perBox * pr.sale_price : 0);
     setCart((c) => {
       // Same product tapped again — just bump its pcs by 1 instead of a duplicate row.
       const idx = c.findIndex((x) => x.product_id === pr.id && !x.discountValue);
@@ -484,7 +501,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
       }
       return [...c, {
         product_id: pr.id, name: pr.name, qty: 1, price: pr.sale_price,
-        discountType: undefined, discountValue: 0, box: 0, pcs: 1, perBox, unit: pr.unit,
+        discountType: undefined, discountValue: 0, box: 0, pcs: 1, perBox, boxPrice, unit: pr.unit,
       }];
     });
     setPq(""); setShowPd(false); setPActive(0);
@@ -505,6 +522,9 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
     return { ...x, box, pcs, qty: box * (x.perBox || 0) + pcs };
   }));
   const removeItem = (i: number) => setCart((c) => c.filter((_, k) => k !== i));
+  // Line total = boxes at box rate + loose pieces at piece rate — independent
+  // of qty×price, since a box can be priced below pieces_per_box×price.
+  const lineAmount = (c: CartLine) => c.box * (c.boxPrice || (c.perBox ? c.perBox * c.price : 0)) + c.pcs * c.price;
 
   // Bill-level discount (applies as a single line at the bottom, matching
   // the reference design's "Discount: None ▾" under the totals, not per item).
@@ -514,7 +534,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
   const billDiscountType: "percent" | "flat" | undefined = discType === "flat" ? "flat" : discType === "none" ? undefined : "percent";
   const billDiscountValue = discType === "custom" ? discCustom : discType === "flat" ? discFlat : discType === "none" ? 0 : Number(discType);
 
-  const subtotal = cart.reduce((a, c) => a + c.qty * c.price, 0);
+  const subtotal = cart.reduce((a, c) => a + lineAmount(c), 0);
   const { lineTotal: cartTotal, discountAmt: billDiscountAmt } = computeLineTotal(1, subtotal, billDiscountType, billDiscountValue);
 
   // Payment
@@ -549,8 +569,13 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
     // Bill-level discount is folded into the first item so createSaleBill's
     // per-item total still adds up to the discounted grand total exactly.
     const items: CartItem[] = cart.map((c, i) => {
-      if (i !== 0 || !billDiscountAmt) return { product_id: c.product_id, name: c.name, qty: c.qty, price: c.price };
-      return { product_id: c.product_id, name: c.name, qty: c.qty, price: c.price, discountType: "flat", discountValue: billDiscountAmt };
+      const effBoxPrice = c.boxPrice || (c.perBox ? c.perBox * c.price : 0);
+      const base: CartItem = {
+        product_id: c.product_id, name: c.name, qty: c.qty, price: c.price,
+        lineTotalOverride: lineAmount(c), boxQty: c.box, pcsQty: c.pcs, boxPrice: c.box > 0 ? effBoxPrice : undefined,
+      };
+      if (i !== 0 || !billDiscountAmt) return base;
+      return { ...base, discountType: "flat", discountValue: billDiscountAmt };
     });
 
     const { billNo, due } = await createSaleBill(branchId, shared.profile.id, cust, {
@@ -597,7 +622,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
               {pMatches.map((pr, i) => (
                 <div key={pr.id} className="row" style={{ padding: "10px 14px", cursor: "pointer", background: i === pActive ? "var(--surface-2)" : undefined }}
                   onMouseEnter={() => setPActive(i)} onMouseDown={() => addProduct(pr)}>
-                  <div><div className="main">{pr.name}</div><div className="sub">{money(pr.sale_price)}/{pr.unit}{pr.pieces_per_box ? ` · 1 box = ${pr.pieces_per_box} pcs` : ""}</div></div>
+                  <div><div className="main">{pr.name}</div><div className="sub">{money(pr.sale_price)}/{pr.unit}{pr.pieces_per_box ? ` · box of ${pr.pieces_per_box} = ${money(pr.box_price || pr.pieces_per_box * pr.sale_price)}` : ""}</div></div>
                 </div>
               ))}
             </div>
@@ -610,13 +635,14 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
         <h3 style={{ fontSize: 14, color: "var(--muted)", margin: "18px 0 8px" }}>Items ({cart.length})</h3>
       )}
       {cart.length ? cart.map((c, i) => {
-        const { lineTotal: lt } = computeLineTotal(c.qty, c.price, undefined, 0);
+        const lt = lineAmount(c);
+        const effBoxPrice = c.boxPrice || (c.perBox ? c.perBox * c.price : 0);
         return (
           <div className="card card-pad" key={i} style={{ marginBottom: 10, boxShadow: "var(--shadow)" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ minWidth: 0 }}>
                 <div className="main" style={{ fontWeight: 700 }}>{c.name}</div>
-                <div className="sub">{money(c.price)} each{c.perBox ? ` · 1 box = ${c.perBox} pcs` : ""}</div>
+                <div className="sub">{money(c.price)}/pc{c.perBox ? ` · ${money(effBoxPrice)}/box (${c.perBox} pcs)` : ""}</div>
               </div>
               <button className="del-btn" style={{ background: "transparent", color: "var(--red)", width: 30, height: 30, flexShrink: 0 }} onClick={() => removeItem(i)}><Icon name="trash" size={16} /></button>
             </div>

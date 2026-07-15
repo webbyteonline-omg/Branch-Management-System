@@ -19,8 +19,10 @@ export interface Product {
   id: string;
   name: string;
   unit: string;
-  sale_price: number;
-  cost_price: number;
+  sale_price: number;    // price per piece
+  cost_price: number;    // cost per piece
+  box_price?: number | null;   // independent box price (e.g. bulk discount) — null = not sold by box, or not priced separately (falls back to pieces_per_box × sale_price)
+  box_cost_price?: number | null; // cost per box, if bought by box (for margin reporting) — null = falls back to pieces_per_box × cost_price
   low_stock_at?: number;
   branch_id?: string | null; // null = all branches
   pieces_per_box?: number | null; // e.g. 12 = 1 box has 12 pcs; null/0 = box selling not used
@@ -36,9 +38,12 @@ export interface Sale {
   product_id?: string | null;
   product_name: string;
   customer_name?: string;
-  qty: number;
-  price: number;
+  qty: number;    // total pieces (box_qty × pieces_per_box + pcs_qty) — used for stock math
+  price: number;  // effective per-piece price = total ÷ qty (blended, so qty×price always reconciles with total even when a box was priced independently)
   total: number;
+  box_qty?: number;   // informational: how many boxes were in this line (0 if sold by piece only)
+  pcs_qty?: number;   // informational: how many loose pieces were in this line
+  box_price?: number | null; // informational: the box price used, if any
   discount?: number; // percent discount amount (kept for back-compat / server trigger)
   discount_type?: "percent" | "flat";
   discount_value?: number; // the raw entered value (percent number or flat rupees)
