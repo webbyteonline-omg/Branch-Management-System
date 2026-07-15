@@ -251,6 +251,7 @@ tbody tr:hover { background: var(--surface-2); }
 .badge.unpaid { background: var(--red-soft); color: var(--red); }
 .badge.paid { background: var(--green-soft); color: var(--green); }
 .badge.role { background: var(--accent-soft); color: var(--accent); }
+.badge.void { background: var(--surface-4); color: var(--muted); text-decoration: line-through; }
 .badge .dot { width: 6px; height: 6px; }
 .empty { color: var(--muted); text-align: center; padding: 40px 10px; font-size: 14px; }
 

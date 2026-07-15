@@ -18,10 +18,17 @@ export const live = <T extends { deleted_at?: string | null }>(rows: T[]) =>
 export const deletedOnly = <T extends { deleted_at?: string | null }>(rows: T[]) =>
   rows.filter((r) => !!r.deleted_at);
 
-// Current stock for a product at a branch = purchases in − sales out (live rows only).
+// Hide soft-deleted AND voided rows — use this before summing/aggregating
+// sales or bills anywhere (dashboards, reports, stock, ledgers). A voided
+// row stays visible in bill-history-style screens (crossed out, VOID label)
+// but must never contribute to a total — this is the filter for that.
+export const forTotals = <T extends { deleted_at?: string | null; void_at?: string | null }>(rows: T[]) =>
+  rows.filter((r) => !r.deleted_at && !r.void_at);
+
+// Current stock for a product at a branch = purchases in − sales out (live, non-voided rows only).
 export function computeStock(productId: string, branchId: string, sales: Sale[], purchases: Purchase[]): number {
   const inQty = purchases.filter((p) => !p.deleted_at && p.branch_id === branchId && p.product_id === productId).reduce((a, p) => a + Number(p.qty), 0);
-  const outQty = sales.filter((s) => !s.deleted_at && s.branch_id === branchId && s.product_id === productId).reduce((a, s) => a + Number(s.qty), 0);
+  const outQty = sales.filter((s) => !s.deleted_at && !s.void_at && s.branch_id === branchId && s.product_id === productId).reduce((a, s) => a + Number(s.qty), 0);
   return inQty - outQty;
 }
 

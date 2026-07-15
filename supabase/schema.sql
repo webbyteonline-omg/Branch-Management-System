@@ -50,6 +50,9 @@ create table if not exists public.products (
 );
 alter table public.products add column if not exists branch_id text references public.branches(id);
 alter table public.products add column if not exists pieces_per_box numeric(12,2);
+-- id was server-default before; staff now create products offline with a
+-- client-generated uuid, so upsert-by-id must work the same way sales/purchases do.
+alter table public.products alter column id drop default;
 
 -- Transactional tables use a CLIENT-GENERATED uuid as primary key.
 -- The phone creates the id offline; sync does an upsert -> the same
@@ -72,7 +75,9 @@ create table if not exists public.sales (
   cash_amount    numeric(12,2),                     -- only set when payment_mode = 'both'
   upi_amount     numeric(12,2),                     -- only set when payment_mode = 'both'
   created_at     timestamptz not null default now(),
-  deleted_at     timestamptz
+  deleted_at     timestamptz,
+  void_at        timestamptz,                       -- voided: bill stays visible (crossed out), excluded from all totals
+  void_snapshot  jsonb                               -- original total/customer captured at void time, for the "tap to view" detail
 );
 -- for existing databases (safe to re-run):
 alter table public.sales add column if not exists bill_no text;
@@ -82,6 +87,8 @@ alter table public.sales add column if not exists discount_type text;
 alter table public.sales add column if not exists discount_value numeric(12,2);
 alter table public.sales add column if not exists cash_amount numeric(12,2);
 alter table public.sales add column if not exists upi_amount numeric(12,2);
+alter table public.sales add column if not exists void_at timestamptz;
+alter table public.sales add column if not exists void_snapshot jsonb;
 
 create table if not exists public.purchases (
   id            uuid primary key,
@@ -122,10 +129,16 @@ create table if not exists public.bills (
   paid          numeric(12,2) not null default 0,
   due_amount    numeric(12,2) not null default 0,
   status        bill_status not null default 'unpaid',
+  due_date      timestamptz,                        -- when this udhaar is expected to be cleared
   created_at    timestamptz not null default now(),
-  deleted_at    timestamptz
+  deleted_at    timestamptz,
+  void_at       timestamptz,                         -- voided: stays visible everywhere, crossed out, excluded from all totals
+  void_snapshot jsonb                                -- original amount/paid/due captured at void time, for the "tap to view" detail
 );
 alter table public.bills add column if not exists bill_no text;
+alter table public.bills add column if not exists due_date timestamptz;
+alter table public.bills add column if not exists void_at timestamptz;
+alter table public.bills add column if not exists void_snapshot jsonb;
 
 -- shop expenses (rent, transport, salary, etc.) — feeds the day book
 create table if not exists public.expenses (
@@ -155,6 +168,7 @@ create index if not exists idx_sales_branch_time     on public.sales(branch_id, 
 create index if not exists idx_purchases_branch_time on public.purchases(branch_id, created_at desc);
 create index if not exists idx_bills_branch          on public.bills(branch_id);
 create index if not exists idx_customers_branch      on public.customers(branch_id);
+create index if not exists idx_products_branch       on public.products(branch_id);
 
 -- ---------- helper functions (SECURITY DEFINER avoids RLS recursion) ----------
 create or replace function public.app_role()
@@ -186,10 +200,16 @@ create policy branches_read on public.branches for select to authenticated using
 drop policy if exists branches_write on public.branches;
 create policy branches_write on public.branches for all to authenticated using (public.is_owner()) with check (public.is_owner());
 
+-- products: everyone can read all products (needed for cross-branch billing lookups).
+-- Writes: owner can touch anything; staff can create/edit/delete only products
+-- scoped to their own branch (branch_id = their branch) — never the shared
+-- (branch_id null = all-branches) catalog, which stays owner-managed.
 drop policy if exists products_read on public.products;
 create policy products_read on public.products for select to authenticated using (true);
 drop policy if exists products_write on public.products;
-create policy products_write on public.products for all to authenticated using (public.is_owner()) with check (public.is_owner());
+create policy products_write on public.products for all to authenticated
+  using (public.is_owner() or branch_id = public.app_branch())
+  with check (public.is_owner() or branch_id = public.app_branch());
 
 -- profiles: owner sees all; a user always sees own row
 drop policy if exists profiles_read on public.profiles;
@@ -227,6 +247,7 @@ do $$ begin
   alter publication supabase_realtime add table public.purchases;
   alter publication supabase_realtime add table public.bills;
   alter publication supabase_realtime add table public.expenses;
+  alter publication supabase_realtime add table public.products;
 exception when duplicate_object then null; end $$;
 
 -- ---------- auto-create a profile when a new auth user is added ----------

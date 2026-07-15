@@ -20,8 +20,8 @@ export function LedgerModal({ branchId, name, onClose, onSync }: { branchId: str
   const cust = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []))
     .find((c) => c.name.toLowerCase() === lc);
 
-  const totalBought = sales.reduce((a, s) => a + s.total, 0);
-  const outstanding = cust?.balance_due ?? bills.filter((b) => b.status === "unpaid").reduce((a, b) => a + b.due_amount, 0);
+  const totalBought = sales.filter((s) => !s.void_at).reduce((a, s) => a + s.total, 0);
+  const outstanding = cust?.balance_due ?? bills.filter((b) => b.status === "unpaid" && !b.void_at).reduce((a, b) => a + b.due_amount, 0);
 
   const settle = async () => {
     const amt = Number(payAmt) || 0;
@@ -31,12 +31,14 @@ export function LedgerModal({ branchId, name, onClose, onSync }: { branchId: str
     setPayAmt(""); onSync?.();
   };
 
-  // group sales by bill_no for readability
-  const byBill = new Map<string, { total: number; date: string; pay: string; items: number }>();
+  // group sales by bill_no for readability. Voided bills stay in the list
+  // (crossed out) but don't add to the group total.
+  const byBill = new Map<string, { total: number; date: string; pay: string; items: number; voided: boolean }>();
   for (const s of sales) {
     const key = s.bill_no || s.id;
-    const g = byBill.get(key) || { total: 0, date: s.created_at, pay: s.payment_mode || "cash", items: 0 };
-    g.total += s.total; g.items += 1;
+    const g = byBill.get(key) || { total: 0, date: s.created_at, pay: s.payment_mode || "cash", items: 0, voided: false };
+    if (s.void_at) g.voided = true; else g.total += s.total;
+    g.items += 1;
     byBill.set(key, g);
   }
   const billGroups = [...byBill.entries()];
@@ -59,19 +61,19 @@ export function LedgerModal({ branchId, name, onClose, onSync }: { branchId: str
       <div style={{ maxHeight: "44vh", overflowY: "auto" }}>
         <div className="t-label" style={{ margin: "4px 0 6px" }}>Bills / purchases</div>
         {billGroups.length ? billGroups.map(([key, g]) => (
-          <div className="row" key={key}>
-            <div><div className="main">{key.startsWith("B-") ? key : "Sale"} · {g.items} item{g.items === 1 ? "" : "s"}</div>
+          <div className="row" key={key} style={{ opacity: g.voided ? .55 : 1 }}>
+            <div><div className="main" style={{ textDecoration: g.voided ? "line-through" : undefined }}>{key.startsWith("B-") ? key : "Sale"} · {g.items} item{g.items === 1 ? "" : "s"}{g.voided ? " · VOID" : ""}</div>
               <div className="sub">{dateStr(g.date)} · {g.pay.toUpperCase()}</div></div>
-            <div className="amt in">{money(g.total)}</div>
+            <div className="amt in" style={{ textDecoration: g.voided ? "line-through" : undefined }}>{money(g.total)}</div>
           </div>
         )) : <div className="empty">No purchases yet.</div>}
 
         {bills.length > 0 && <>
           <div className="t-label" style={{ margin: "14px 0 6px" }}>Udhaar bills</div>
           {bills.map((b) => (
-            <div className="row" key={b.id}>
-              <div><div className="main">{dateStr(b.created_at)}</div><div className="sub">paid {money(b.paid)} of {money(b.amount)}</div></div>
-              <div style={{ textAlign: "right" }}><div className={"amt " + (b.due_amount > 0 ? "out" : "in")}>{money(b.due_amount)}</div><span className={"badge " + b.status}>{b.status}</span></div>
+            <div className="row" key={b.id} style={{ opacity: b.void_at ? .55 : 1 }}>
+              <div><div className="main" style={{ textDecoration: b.void_at ? "line-through" : undefined }}>{dateStr(b.created_at)}{b.void_at ? " · VOID" : ""}</div><div className="sub">paid {money(b.paid)} of {money(b.amount)}</div></div>
+              <div style={{ textAlign: "right" }}><div className={"amt " + (b.due_amount > 0 ? "out" : "in")}>{money(b.due_amount)}</div><span className={"badge " + b.status}>{b.void_at ? "void" : b.status}</span></div>
             </div>
           ))}
         </>}

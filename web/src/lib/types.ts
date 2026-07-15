@@ -26,6 +26,7 @@ export interface Product {
   pieces_per_box?: number | null; // e.g. 12 = 1 box has 12 pcs; null/0 = box selling not used
   active?: boolean;
   deleted_at?: string | null;
+  _synced?: 0 | 1;
 }
 
 export interface Sale {
@@ -47,6 +48,8 @@ export interface Sale {
   bill_no?: string | null;
   created_at: string;
   deleted_at?: string | null;
+  void_at?: string | null;       // voided: stays visible everywhere (crossed out), excluded from all totals
+  void_snapshot?: { product_name: string; customer_name?: string; qty: number; price: number; total: number } | null;
   _synced?: 0 | 1; // local-only flag (not sent to server)
 }
 
@@ -87,8 +90,11 @@ export interface Bill {
   paid: number;
   due_amount: number;
   status: "unpaid" | "paid";
+  due_date?: string | null;
   created_at: string;
   deleted_at?: string | null;
+  void_at?: string | null;       // voided: stays visible (crossed out, VOID label), excluded from all totals
+  void_snapshot?: { amount: number; paid: number; due_amount: number; status: "unpaid" | "paid" } | null;
   _synced?: 0 | 1;
 }
 

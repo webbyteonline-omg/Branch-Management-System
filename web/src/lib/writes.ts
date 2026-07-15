@@ -4,7 +4,7 @@ import type { Bill, Customer, Product, Expense, Settings } from "./types";
 
 const uuid = () => crypto.randomUUID();
 
-type SyncTable = "sales" | "purchases" | "customers" | "bills" | "expenses";
+type SyncTable = "sales" | "purchases" | "customers" | "bills" | "expenses" | "products";
 
 /** Soft delete — never actually removes data. Sets deleted_at and re-syncs. */
 export async function softDelete(table: SyncTable, id: string): Promise<void> {
@@ -139,7 +139,7 @@ export async function settleCustomerDues(branchId: string, customerName: string,
   let left = Number(amount) || 0;
   const lc = customerName.trim().toLowerCase();
   const bills = (await localdb.bills.where("branch_id").equals(branchId).toArray())
-    .filter((b) => !b.deleted_at && b.status === "unpaid" && b.customer_name.toLowerCase() === lc)
+    .filter((b) => !b.deleted_at && !b.void_at && b.status === "unpaid" && b.customer_name.toLowerCase() === lc)
     .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
   let applied = 0;
   for (const b of bills) {
@@ -196,11 +196,12 @@ export async function addCustomer(branchId: string, name: string, phone: string)
 }
 
 /** Create an udhaar bill; increases the customer's balance if they exist. */
-export async function addBill(branchId: string, customerName: string, amount: number, paidNow: number): Promise<void> {
+export async function addBill(branchId: string, customerName: string, amount: number, paidNow: number, dueDate?: string | null): Promise<void> {
   const due = Math.max(0, amount - paidNow);
   const bill: Bill = {
     id: uuid(), branch_id: branchId, customer_name: customerName.trim(),
     amount, paid: paidNow, due_amount: due, status: due <= 0 ? "paid" : "unpaid",
+    due_date: dueDate || null,
     created_at: new Date().toISOString(), _synced: 0,
   };
   await localdb.bills.add(bill);
@@ -215,6 +216,50 @@ export async function recordPayment(bill: Bill, amount: number): Promise<void> {
   await bumpCustomerBalance(bill.branch_id, bill.customer_name, -amount);
 }
 
+/** Void an udhaar bill — stays visible everywhere (crossed out / VOID label,
+ *  tap to see what it was), but its due is fully reversed off the customer's
+ *  balance and it's excluded from every total/report from this point on.
+ *  Unlike softDelete, a void is not restorable — it's a permanent correction
+ *  ("this bill should never have counted"), so the original numbers are kept
+ *  in void_snapshot purely for on-screen reference. */
+export async function voidBill(bill: Bill): Promise<void> {
+  if (bill.void_at) return;
+  if (bill.status === "unpaid" && bill.due_amount > 0) {
+    await bumpCustomerBalance(bill.branch_id, bill.customer_name, -bill.due_amount);
+  }
+  await localdb.bills.put({
+    ...bill, void_at: new Date().toISOString(),
+    void_snapshot: { amount: bill.amount, paid: bill.paid, due_amount: bill.due_amount, status: bill.status },
+    due_amount: 0, status: "paid", _synced: 0,
+  });
+}
+
+/** Void a POS bill (all sales rows sharing one bill_no) — same "stays visible,
+ *  crossed out, excluded from totals" treatment as voidBill. Also voids the
+ *  linked udhaar bill (if any) so the customer's balance clears fully. */
+export async function voidSaleGroup(branchId: string, billNo: string): Promise<void> {
+  const rows = (await localdb.sales.where("branch_id").equals(branchId).toArray())
+    .filter((s) => (s.bill_no || s.id) === billNo && !s.void_at);
+  const now = new Date().toISOString();
+  for (const s of rows) {
+    await localdb.sales.put({
+      ...s, void_at: now,
+      void_snapshot: { product_name: s.product_name, customer_name: s.customer_name, qty: s.qty, price: s.price, total: s.total },
+      _synced: 0,
+    });
+  }
+  const linkedBills = (await localdb.bills.where("branch_id").equals(branchId).toArray())
+    .filter((b) => b.bill_no === billNo && !b.void_at);
+  for (const b of linkedBills) await voidBill(b);
+}
+
+/** Public wrapper — lets edit flows (EditBillModal) adjust a customer's
+ *  balance by a known delta when they change a bill's amount/paid directly,
+ *  so the ledger stays in sync with hand-edited bills. */
+export async function bumpCustomerBalanceFor(branchId: string, name: string, delta: number): Promise<void> {
+  return bumpCustomerBalance(branchId, name, delta);
+}
+
 async function bumpCustomerBalance(branchId: string, name: string, delta: number) {
   const match = (await localdb.customers.where("branch_id").equals(branchId).toArray())
     .find((c) => c.name.toLowerCase() === name.trim().toLowerCase());
@@ -223,18 +268,41 @@ async function bumpCustomerBalance(branchId: string, name: string, delta: number
   }
 }
 
-/** Owner product/price management — writes straight to Supabase (RLS: owner only). */
-export async function saveProduct(p: Partial<Product> & { name: string }, online: boolean): Promise<boolean> {
-  if (!online) return false;
-  const row = {
+/** Keep a POS bill's linked udhaar row (bills table, same bill_no) and the
+ *  customer's balance in sync after editing the underlying sales lines'
+ *  qty/price (EditBillGroupModal). The bill's `amount` is rescaled to the
+ *  new sales total, `paid` stays what it was, `due_amount` is recomputed —
+ *  and the customer's balance is adjusted by exactly the due_amount delta
+ *  (not the raw total), so an already-partially-paid bill doesn't get
+ *  double-counted. No-op if there's no linked unpaid/partial bill for this
+ *  bill_no (i.e. the original sale was paid in full, nothing to reconcile).
+ *  Customer renames are intentionally NOT moved here — the bill keeps its
+ *  original customer_name for balance purposes to avoid double-moving money;
+ *  rename the customer separately via Edit customer if needed. */
+export async function syncLinkedBillTotal(branchId: string, billNo: string, newSalesTotal: number): Promise<void> {
+  const linked = (await localdb.bills.where("branch_id").equals(branchId).toArray())
+    .find((b) => b.bill_no === billNo && !b.deleted_at && !b.void_at);
+  if (!linked) return;
+  const due = Math.max(0, newSalesTotal - linked.paid);
+  const delta = due - linked.due_amount;
+  await localdb.bills.put({ ...linked, amount: newSalesTotal, due_amount: due, status: due <= 0 ? "paid" : "unpaid", _synced: 0 });
+  if (delta !== 0) await bumpCustomerBalance(branchId, linked.customer_name, delta);
+}
+
+/** Product add/edit — offline-first, same pattern as sales/purchases. Owner
+ *  can touch any product (incl. the shared branch_id-null catalog); staff can
+ *  only create/edit products scoped to their own branch (RLS enforces this
+ *  server-side too — see products_write policy). */
+export async function saveProduct(p: Partial<Product> & { name: string }, branchId?: string | null): Promise<boolean> {
+  const row: Product = {
     id: p.id ?? crypto.randomUUID(),
     name: p.name.trim(), unit: p.unit || "pcs",
     sale_price: Number(p.sale_price) || 0, cost_price: Number(p.cost_price) || 0,
-    low_stock_at: Number(p.low_stock_at ?? 5), branch_id: p.branch_id ?? null,
+    low_stock_at: Number(p.low_stock_at ?? 5),
+    branch_id: p.branch_id !== undefined ? p.branch_id : (branchId ?? null),
     pieces_per_box: p.pieces_per_box ? Number(p.pieces_per_box) : null, active: true,
+    deleted_at: null, _synced: 0,
   };
-  const { error } = await supabase.from("products").upsert(row);
-  if (error) return false;
-  await localdb.products.put(row as Product);
+  await localdb.products.put(row);
   return true;
 }

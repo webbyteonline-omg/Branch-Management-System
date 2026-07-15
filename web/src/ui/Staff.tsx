@@ -6,15 +6,15 @@ import { money, dateStr, timeStr, rangeStart } from "../lib/format";
 import { toast } from "./Toast";
 import { Modal } from "./Modal";
 import { LedgerModal } from "./Ledger";
-import { EditCustomerModal, EditEntryModal, EditBillModal } from "./Edits";
-import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, computeLineTotal, settleCustomerDues, type CartItem } from "../lib/writes";
-import { sum, live, computeStock, productsForBranch, type SharedProps } from "./shared";
+import { EditCustomerModal, EditEntryModal, EditBillModal, EditBillGroupModal } from "./Edits";
+import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, computeLineTotal, settleCustomerDues, saveProduct, voidBill, voidSaleGroup, type CartItem } from "../lib/writes";
+import { sum, live, forTotals, computeStock, productsForBranch, type SharedProps } from "./shared";
 import { BarChart } from "./Charts";
-import type { Purchase, Bill as BillT } from "../lib/types";
+import type { Purchase, Bill as BillT, Product as ProductT } from "../lib/types";
 
 const confirmDel = (what: string) => window.confirm(`Delete this ${what}? It can be restored by the owner.`);
 
-type Tab = "dashboard" | "sale" | "purchase" | "bills" | "customers" | "ledger" | "stock" | "daybook";
+type Tab = "dashboard" | "sale" | "purchase" | "unpaid" | "previous" | "customers" | "ledger" | "stock" | "products" | "daybook";
 
 export function Staff(p: SharedProps) {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -27,12 +27,13 @@ export function Staff(p: SharedProps) {
   // Bottom bar: the 5 most-used. Everything (incl. these) also lives in the hamburger menu.
   const tabs: [Tab, string, string][] = [
     ["dashboard", "Home", "dashboard"], ["sale", "Billing", "sales"], ["purchase", "Purchase", "cart"],
-    ["bills", "Bills", "bill"], ["customers", "Customers", "customers"],
+    ["unpaid", "Unpaid", "warning"], ["previous", "Previous", "bill"],
   ];
   const menuItems: [Tab, string, string][] = [
     ["dashboard", "Dashboard", "dashboard"], ["sale", "Billing / Sell", "sales"], ["purchase", "Purchase", "cart"],
-    ["ledger", "Ledger", "book"], ["customers", "Customers", "customers"], ["stock", "Stock", "reports"],
-    ["bills", "Bills / Udhaar", "bill"], ["daybook", "Day Book", "day"],
+    ["ledger", "Ledger", "book"], ["customers", "Customers", "customers"], ["products", "Products", "boxIcon"],
+    ["stock", "Stock", "reports"], ["unpaid", "Unpaid Bills", "warning"], ["previous", "Previous Bills", "bill"],
+    ["daybook", "Day Book", "day"],
   ];
 
   const go = (t: Tab) => { setTab(t); setShowMenu(false); };
@@ -62,10 +63,12 @@ export function Staff(p: SharedProps) {
       )}
       <div className="m-content">
         {tab === "dashboard" && <StaffDashboard branchId={branchId} branchName={branchName} shared={p} go={go} />}
-        {tab === "sale" && <BillingForm branchId={branchId} shared={p} branchName={branchName} />}
+        {tab === "sale" && <NewBillForm branchId={branchId} shared={p} branchName={branchName} />}
         {tab === "purchase" && <PurchaseForm branchId={branchId} shared={p} />}
-        {tab === "bills" && <Bills branchId={branchId} shared={p} branchName={branchName} />}
+        {tab === "unpaid" && <UnpaidBills branchId={branchId} shared={p} />}
+        {tab === "previous" && <PreviousBills branchId={branchId} shared={p} branchName={branchName} />}
         {tab === "customers" && <Customers branchId={branchId} shared={p} />}
+        {tab === "products" && <StaffProducts branchId={branchId} shared={p} />}
         {tab === "ledger" && <StaffLedger branchId={branchId} shared={p} />}
         {tab === "stock" && <StaffStock branchId={branchId} />}
         {tab === "daybook" && <Daybook branchId={branchId} shared={p} />}
@@ -125,8 +128,8 @@ function last7DaysSales(sales: { created_at: string; total: number }[]) {
 }
 
 function StaffDashboard({ branchId, branchName, shared, go }: { branchId: string; branchName: string; shared: SharedProps; go: (t: Tab) => void }) {
-  const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const bills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const sales = forTotals(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const bills = forTotals(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []));
 
   const today = rangeStart("today");
   const todaySales = sales.filter((s) => new Date(s.created_at).getTime() >= today);
@@ -240,6 +243,76 @@ function StaffStock({ branchId }: { branchId: string }) {
   );
 }
 
+/* ---------- Products (add / edit / delete, own branch only) ---------- */
+function StaffProducts({ branchId, shared }: { branchId: string; shared: SharedProps }) {
+  const prodAll = useLiveQuery(() => localdb.products.toArray(), [], []);
+  const products = productsForBranch(prodAll, branchId).sort((a, b) => a.name.localeCompare(b.name));
+  const [q, setQ] = useState("");
+  const [edit, setEdit] = useState<Partial<ProductT> | null>(null);
+  const blank: Partial<ProductT> = { name: "", unit: "pcs", sale_price: 0, cost_price: 0, low_stock_at: 5, branch_id: branchId };
+  const rows = products.filter((pr) => pr.name.toLowerCase().includes(q.toLowerCase()));
+
+  const save = async () => {
+    if (!edit?.name?.trim()) return toast("Enter a product name");
+    // Staff can only own products scoped to their branch — never the shared "all branches" catalog.
+    await saveProduct({ ...edit, branch_id: branchId } as any, branchId);
+    toast("Product saved" + (shared.online ? "" : " offline")); setEdit(null); shared.onSync();
+  };
+  const delProd = async (pr: ProductT) => { if (confirmDel("product")) { await softDelete("products", pr.id); toast("Deleted"); shared.onSync(); } };
+
+  return (
+    <>
+      <div className="field" style={{ position: "relative", marginBottom: 14 }}>
+        <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={17} /></span>
+        <input style={{ paddingLeft: 38, height: 48, borderRadius: 12 }} placeholder="Search products…" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 16 }}>
+        <div className="stat" style={{ textAlign: "center" }}><div className="label">Products</div><div className="value" style={{ fontSize: 19, color: "var(--accent)" }}>{products.length}</div></div>
+        <div className="stat" style={{ textAlign: "center" }}><div className="label">Catalog Value</div><div className="value" style={{ fontSize: 19 }}>{money(sum(products, "sale_price"))}</div></div>
+      </div>
+      {rows.length ? rows.map((pr) => (
+        <div key={pr.id} className="card card-pad" style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div className="main" style={{ fontWeight: 700 }}>{pr.name}{pr._synced === 0 ? " · ⏳" : ""}</div>
+            <span className="b-tag">{pr.branch_id ? "This branch" : "All branches"}</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
+            <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Unit</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{pr.unit}</div></div>
+            <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Cost</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{money(pr.cost_price)}</div></div>
+            <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Sale Price</div><div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--accent)" }}>{money(pr.sale_price)}</div></div>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button className="btn ghost" style={{ flex: 1, padding: "9px 0" }} onClick={() => setEdit({ ...pr })}>Edit</button>
+            <button className="icon-btn" style={{ width: 40, height: 40, border: "1px solid var(--line)", borderRadius: 10, color: "var(--red)" }} onClick={() => delProd(pr)}><Icon name="trash" size={16} /></button>
+          </div>
+        </div>
+      )) : <div className="card card-pad"><div className="empty">{products.length ? "No products match your search." : "No products yet for this branch."}</div></div>}
+
+      <button className="fab round" onClick={() => setEdit({ ...blank })}><Icon name="plus" size={22} /></button>
+
+      {edit && (
+        <Modal title={edit.id ? "Edit product" : "Add product"} onClose={() => setEdit(null)}>
+          <div className="form-grid">
+            <div className="field"><label>Name</label><input value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="Product name" /></div>
+            <div className="qty-row">
+              <div className="field"><label>Unit</label><input value={edit.unit ?? ""} onChange={(e) => setEdit({ ...edit, unit: e.target.value })} placeholder="box / kg" /></div>
+              <div className="field"><label>Low-stock alert ≤</label><input type="number" inputMode="numeric" value={edit.low_stock_at ?? 5} onChange={(e) => setEdit({ ...edit, low_stock_at: +e.target.value })} /></div>
+            </div>
+            <div className="qty-row">
+              <div className="field"><label>Cost price</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
+              <div className="field"><label>Sale price</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
+            </div>
+            <div className="field"><label>Pieces per box (optional)</label>
+              <input type="number" inputMode="numeric" value={edit.pieces_per_box ?? ""} onChange={(e) => setEdit({ ...edit, pieces_per_box: e.target.value === "" ? null : +e.target.value })} placeholder="e.g. 12 — leave blank if not sold by box" />
+            </div>
+            <div className="btn-row"><button className="btn ghost" onClick={() => setEdit(null)}>Cancel</button><button className="btn" onClick={save}>Save product</button></div>
+          </div>
+        </Modal>
+      )}
+    </>
+  );
+}
+
 /* ---------- Ledger (all customers, Outstanding / Paid tabs) ---------- */
 function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const cust = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
@@ -258,8 +331,8 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
     .sort((a, b) => b.balance_due - a.balance_due);
   const totalDue = sum(outstandingRows, "balance_due");
 
-  // "Paid" = customers with no outstanding balance who have at least one bill history entry.
-  const paidNames = [...new Set(bills.filter((b) => b.status === "paid").map((b) => b.customer_name))]
+  // "Paid" = customers with no outstanding balance who have at least one bill history entry (voided bills don't count as paid history).
+  const paidNames = [...new Set(bills.filter((b) => b.status === "paid" && !b.void_at).map((b) => b.customer_name))]
     .filter((n) => !cust.find((c) => c.name === n && c.balance_due > 0))
     .filter((n) => n.toLowerCase().includes(q.toLowerCase()));
 
@@ -280,7 +353,7 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
         <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".6px", color: "var(--muted)", fontWeight: 700 }}>
           {tab === "outstanding" ? "Total Outstanding" : "Total Settled"}
         </div>
-        <div style={{ fontSize: 28, fontWeight: 800, color: "var(--accent)", marginTop: 6 }}>{money(tab === "outstanding" ? totalDue : sum(bills.filter((b) => b.status === "paid"), "amount"))}</div>
+        <div style={{ fontSize: 28, fontWeight: 800, color: "var(--accent)", marginTop: 6 }}>{money(tab === "outstanding" ? totalDue : sum(bills.filter((b) => b.status === "paid" && !b.void_at), "amount"))}</div>
       </div>
 
       <div className="pill-toggle" style={{ marginBottom: 14 }}>
@@ -328,7 +401,7 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
       ) : (
         paidNames.length ? paidNames.map((name) => {
           const isOpen = expanded.has(name);
-          const cBills = billsFor(name).filter((b) => b.status === "paid");
+          const cBills = billsFor(name).filter((b) => b.status === "paid" && !b.void_at);
           const total = sum(cBills, "amount");
           return (
             <div className="card" key={name} style={{ marginBottom: 8, overflow: "hidden" }}>
@@ -374,21 +447,6 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
 /* ---------- Sale (New Bill / Previous Bills) ---------- */
 type DiscType = "none" | "5" | "10" | "custom" | "flat";
 type CartLine = CartItem & { box: number; pcs: number; perBox: number; unit: string };
-
-function BillingForm({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
-  const [billTab, setBillTab] = useState<"new" | "previous">("new");
-  return (
-    <>
-      <div className="pill-toggle" style={{ marginBottom: 16 }}>
-        <button className={billTab === "new" ? "active" : ""} onClick={() => setBillTab("new")}>New Bill</button>
-        <button className={billTab === "previous" ? "active" : ""} onClick={() => setBillTab("previous")}>Previous Bills</button>
-      </div>
-      {billTab === "new"
-        ? <NewBillForm branchId={branchId} shared={shared} branchName={branchName} />
-        : <PreviousBills branchId={branchId} shared={shared} branchName={branchName} />}
-    </>
-  );
-}
 
 function NewBillForm({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
   const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
@@ -468,7 +526,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
   const [saving, setSaving] = useState(false);
 
   const today = rangeStart("today");
-  const todayTotal = sum(live(branchSales).filter((s) => new Date(s.created_at).getTime() >= today), "total");
+  const todayTotal = sum(forTotals(branchSales).filter((s) => new Date(s.created_at).getTime() >= today), "total");
 
   const amountPaidNow = payMode === "credit" ? 0
     : paidFull ? cartTotal
@@ -673,37 +731,80 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
 }
 
 /* Previous Bills — past sales for this branch, grouped by bill_no. */
-function PreviousBills({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
+type BillGroup = { billNo: string; items: any[]; total: number; customer: string; date: string; pay: string; voided: boolean };
+
+function PreviousBills({ branchId, shared }: { branchId: string; shared: SharedProps; branchName?: string }) {
+  // Voided bills stay visible (crossed out) — only true soft-deletes drop off screen.
   const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const [q, setQ] = useState("");
+  const [view, setView] = useState<BillGroup | null>(null);
+  const [editGroup, setEditGroup] = useState<BillGroup | null>(null);
 
   const groups = useMemo(() => {
-    const map = new Map<string, { billNo: string; items: typeof sales; total: number; customer: string; date: string; pay: string }>();
+    const map = new Map<string, BillGroup>();
     for (const s of sales) {
       const key = s.bill_no || s.id;
-      if (!map.has(key)) map.set(key, { billNo: key, items: [], total: 0, customer: s.customer_name || "Walk-in", date: s.created_at, pay: s.payment_mode || "cash" });
+      if (!map.has(key)) map.set(key, { billNo: key, items: [], total: 0, customer: s.customer_name || "Walk-in", date: s.created_at, pay: s.payment_mode || "cash", voided: false });
       const g = map.get(key)!;
-      g.items.push(s); g.total += s.total;
+      g.items.push(s);
+      if (s.void_at) g.voided = true; else g.total += s.total;
     }
     return [...map.values()]
       .filter((g) => g.billNo.toLowerCase().includes(q.toLowerCase()) || g.customer.toLowerCase().includes(q.toLowerCase()))
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [sales, q]);
 
+  const doVoid = async (g: BillGroup) => {
+    if (!window.confirm(`Void bill ${g.billNo}? It stays visible (crossed out) but is removed from totals and the customer's due.`)) return;
+    await voidSaleGroup(branchId, g.billNo);
+    toast("Bill voided"); shared.onSync();
+  };
+
   return (
-    <div className="card">
-      <div className="card-head"><h3>Previous bills</h3><input className="search" placeholder="Search bill # or customer…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
-      <div className="card-pad" style={{ paddingTop: 6 }}>
-        {groups.length ? groups.map((g) => (
-          <div className="row" key={g.billNo}>
-            <div><div className="main">{g.billNo.startsWith(g.customer) ? g.billNo : `Bill #${g.billNo}`}</div>
-              <div className="sub">{g.customer} · {dateStr(g.date)} · {g.items.length} item{g.items.length === 1 ? "" : "s"} · {g.pay.toUpperCase()}</div></div>
-            <b>{money(g.total)}</b>
-          </div>
-        )) : <div className="empty">No bills yet.</div>}
+    <>
+      <div className="card">
+        <div className="card-head"><h3>Previous bills</h3><input className="search" placeholder="Search bill # or customer…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+        <div className="card-pad" style={{ paddingTop: 6 }}>
+          {groups.length ? groups.map((g) => (
+            <div className="row" key={g.billNo} style={{ opacity: g.voided ? .55 : 1, cursor: "pointer" }} onClick={() => setView(g)}>
+              <div>
+                <div className="main" style={{ textDecoration: g.voided ? "line-through" : undefined }}>
+                  {g.billNo.startsWith(g.customer) ? g.billNo : `Bill #${g.billNo}`}
+                  {g.voided && <span className="status-pill warn" style={{ marginLeft: 8, fontSize: 10 }}>VOID</span>}
+                </div>
+                <div className="sub">{g.customer} · {dateStr(g.date)} · {g.items.length} item{g.items.length === 1 ? "" : "s"} · {g.pay.toUpperCase()}</div>
+              </div>
+              <b style={{ textDecoration: g.voided ? "line-through" : undefined }}>{money(g.total)}</b>
+            </div>
+          )) : <div className="empty">No bills yet.</div>}
+        </div>
       </div>
-      {!shared && null}
-    </div>
+
+      {view && (
+        <Modal title={view.billNo.startsWith(view.customer) ? view.billNo : `Bill #${view.billNo}`} onClose={() => setView(null)}>
+          <div className="form-grid">
+            {view.voided && <div style={{ background: "var(--red-soft)", color: "var(--red)", padding: "8px 12px", borderRadius: 10, fontSize: 13, fontWeight: 700 }}>This bill was voided — it no longer counts toward any totals or the customer's due.</div>}
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>{view.customer} · {dateStr(view.date)} · {view.pay.toUpperCase()}</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {view.items.map((it: any) => (
+                <div key={it.id} className="row" style={{ opacity: it.void_at ? .55 : 1 }}>
+                  <div><div className="main" style={{ textDecoration: it.void_at ? "line-through" : undefined }}>{it.product_name}</div><div className="sub">{it.qty} × {money(it.price)}</div></div>
+                  <b style={{ textDecoration: it.void_at ? "line-through" : undefined }}>{money(it.total)}</b>
+                </div>
+              ))}
+            </div>
+            <div className="row" style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}><b>Total</b><b style={{ color: "var(--accent)" }}>{money(view.total)}</b></div>
+            <div className="btn-row">
+              <button className="btn ghost" onClick={() => setView(null)}>Close</button>
+              {!view.voided && <button className="btn" onClick={() => { setEditGroup(view); setView(null); }}>Edit</button>}
+              {!view.voided && <button className="btn" style={{ background: "var(--red)" }} onClick={() => { doVoid(view); setView(null); }}>Void bill</button>}
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {editGroup && <EditBillGroupModal group={editGroup} branchId={branchId} onClose={() => setEditGroup(null)} onSync={shared.onSync} />}
+    </>
   );
 }
 
@@ -809,24 +910,36 @@ function PurchaseForm({ branchId, shared }: { branchId: string; shared: SharedPr
 }
 
 /* ---------- Bills / Customers / Daybook ---------- */
-function Bills({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
+/* Unpaid Bills — grouped by customer, due date per bill, per-bill and
+ * per-customer "add payment" (per-customer auto-splits oldest-first across
+ * that customer's unpaid bills, same as the Ledger's settle flow). */
+function UnpaidBills({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const bills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []))
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    .filter((b) => b.status === "unpaid")
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()); // oldest first within each customer group
   const customers = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const due = sum(bills.filter((b) => b.status === "unpaid"), "due_amount");
-  const delBill = async (id: string) => { if (confirmDel("bill")) { await softDelete("bills", id); toast("Deleted"); shared.onSync(); } };
+  const due = sum(bills, "due_amount");
 
   const [showNew, setShowNew] = useState(false);
-  const [name, setName] = useState(""); const [amount, setAmount] = useState(0); const [paidNow, setPaidNow] = useState(0);
+  const [name, setName] = useState(""); const [amount, setAmount] = useState(0); const [paidNow, setPaidNow] = useState(0); const [dueDate, setDueDate] = useState("");
   const [payFor, setPayFor] = useState<BillT | null>(null); const [payAmt, setPayAmt] = useState(0);
   const [editBill, setEditBill] = useState<BillT | null>(null);
+  const [settleFor, setSettleFor] = useState<string | null>(null); const [settleAmt, setSettleAmt] = useState<number | "">("");
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (n: string) => setExpanded((s) => { const nx = new Set(s); nx.has(n) ? nx.delete(n) : nx.add(n); return nx; });
+
+  const groups = useMemo(() => {
+    const map = new Map<string, BillT[]>();
+    for (const b of bills) { const k = b.customer_name; if (!map.has(k)) map.set(k, []); map.get(k)!.push(b); }
+    return [...map.entries()].map(([cust, list]) => ({ cust, list, total: sum(list, "due_amount") })).sort((a, b) => b.total - a.total);
+  }, [bills]);
 
   const saveBill = async () => {
     if (!name.trim()) return toast("Enter customer name");
     if (!amount || amount <= 0) return toast("Enter bill amount");
-    await addBill(branchId, name, Number(amount), Number(paidNow) || 0);
+    await addBill(branchId, name, Number(amount), Number(paidNow) || 0, dueDate || null);
     toast("Bill saved" + (shared.online ? "" : " offline"));
-    setShowNew(false); setName(""); setAmount(0); setPaidNow(0); shared.onSync();
+    setShowNew(false); setName(""); setAmount(0); setPaidNow(0); setDueDate(""); shared.onSync();
   };
   const savePay = async () => {
     if (!payFor) return;
@@ -835,6 +948,27 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
     toast("Payment recorded" + (shared.online ? "" : " offline"));
     setPayFor(null); setPayAmt(0); shared.onSync();
   };
+  const doSettle = async () => {
+    if (!settleFor) return;
+    const amt = Number(settleAmt) || 0;
+    if (amt <= 0) return toast("Enter amount");
+    const applied = await settleCustomerDues(branchId, settleFor, amt);
+    toast(applied > 0 ? `${money(applied)} settled for ${settleFor}` : "No dues to settle");
+    setSettleFor(null); setSettleAmt(""); shared.onSync();
+  };
+  const doVoid = async (b: BillT) => {
+    if (!window.confirm(`Void this bill for ${b.customer_name}? It stays visible (crossed out) but is removed from totals and their due.`)) return;
+    await voidBill(b); toast("Bill voided"); shared.onSync();
+  };
+
+  // Live allocation preview for the customer-level settle modal — same
+  // oldest-first math as settleCustomerDues, run client-side just to show
+  // "which bills this payment will clear" before confirming.
+  const settleBills = settleFor ? (groups.find((g) => g.cust === settleFor)?.list ?? []) : [];
+  const settlePreview = useMemo(() => {
+    let left = Number(settleAmt) || 0;
+    return settleBills.map((b) => { const applied = Math.min(left, b.due_amount); left -= applied; return { b, applied }; });
+  }, [settleAmt, settleFor]);
 
   return (
     <>
@@ -845,32 +979,57 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
         </div>
         <div className="glass-card" style={{ borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 88 }}>
           <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5, fontWeight: 600 }}><Icon name="bill" size={15} /> Open Bills</span>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{bills.filter((b) => b.status === "unpaid").length}</div>
+          <div style={{ fontSize: 20, fontWeight: 800 }}>{bills.length}</div>
         </div>
       </div>
 
-      {bills.length ? bills.map((b) => (
-        <div className="card card-pad" key={b.id} style={{ marginBottom: 10 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div><div className="main" style={{ fontWeight: 700 }}>{b.customer_name}</div>
-              <div className="sub">{dateStr(b.created_at)}{b._synced === 0 ? " · ⏳" : ""}</div></div>
-            <span className={"status-pill " + (b.status === "unpaid" ? "warn" : "ok")}>{b.status === "unpaid" ? "Pending" : "Paid"}</span>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", padding: "10px 0", borderTop: "1px solid var(--line-2)", borderBottom: "1px solid var(--line-2)", marginTop: 10 }}>
-            <div><div style={{ fontSize: 10, textTransform: "uppercase", color: "var(--muted)", letterSpacing: ".4px" }}>Paid / Total</div>
-              <div style={{ fontWeight: 700, fontSize: 14 }}>{money(b.paid)} / {money(b.amount)}</div></div>
-            <div style={{ textAlign: "right" }}><div style={{ fontSize: 10, textTransform: "uppercase", color: "var(--muted)", letterSpacing: ".4px" }}>Balance Due</div>
-              <div style={{ fontWeight: 800, fontSize: 17, color: "var(--red)" }}>{money(b.due_amount)}</div></div>
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
-            <div style={{ display: "flex", gap: 6 }}>
-              <button className="icon-btn" style={{ background: "var(--surface-2)", width: 36, height: 36 }} onClick={() => setEditBill(b)}><Icon name="settings" size={16} /></button>
-              <button className="icon-btn" style={{ background: "var(--surface-2)", width: 36, height: 36, color: "var(--red)" }} onClick={() => delBill(b.id)}><Icon name="trash" size={16} /></button>
+      {groups.length ? groups.map((g) => {
+        const isOpen = expanded.has(g.cust);
+        return (
+          <div className="card" key={g.cust} style={{ marginBottom: 10, overflow: "hidden" }}>
+            <div style={{ padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => toggle(g.cust)}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--surface-4)", color: "var(--accent)", display: "grid", placeItems: "center", fontWeight: 800 }}>{g.cust.split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase()}</div>
+                <div><div className="main" style={{ fontWeight: 700 }}>{g.cust}</div><div className="sub">{g.list.length} bill{g.list.length === 1 ? "" : "s"} due</div></div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div className="amt out" style={{ fontSize: 15 }}>{money(g.total)}</div>
+                <button className="btn" style={{ width: "auto", padding: "8px 16px", borderRadius: 10, fontSize: 13 }} onClick={(e) => { e.stopPropagation(); setSettleFor(g.cust); setSettleAmt(g.total); }}>Pay</button>
+                <span style={{ color: "var(--faint)", transform: isOpen ? "rotate(180deg)" : undefined, transition: "transform .15s" }}><Icon name="chevronDown" size={18} /></span>
+              </div>
             </div>
-            {b.status === "unpaid" && <button className="btn" style={{ width: "auto", padding: "9px 18px", borderRadius: 999 }} onClick={() => { setPayFor(b); setPayAmt(b.due_amount); }}>Pay Now</button>}
+            {isOpen && (
+              <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
+                {g.list.map((b) => {
+                  const overdue = b.due_date && new Date(b.due_date).getTime() < Date.now();
+                  return (
+                    <div key={b.id} className="card card-pad" style={{ background: "var(--surface-2)" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                        <div><div style={{ fontWeight: 700, fontSize: 13 }}>{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"}</div>
+                          <div className="sub">{dateStr(b.created_at)}{b._synced === 0 ? " · ⏳" : ""}</div>
+                          {b.due_date && <div className="sub" style={{ color: overdue ? "var(--red)" : "var(--muted)", fontWeight: overdue ? 700 : 400 }}>Due {dateStr(b.due_date)}{overdue ? " · overdue" : ""}</div>}
+                        </div>
+                        <div style={{ textAlign: "right" }}>
+                          <div style={{ fontSize: 10, textTransform: "uppercase", color: "var(--muted)" }}>Paid / Total</div>
+                          <div style={{ fontWeight: 700, fontSize: 13 }}>{money(b.paid)} / {money(b.amount)}</div>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--line)" }}>
+                        <span style={{ color: "var(--red)", fontWeight: 800, fontSize: 15 }}>{money(b.due_amount)}</span>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <button className="icon-btn" style={{ background: "var(--surface)", width: 32, height: 32 }} onClick={() => setEditBill(b)}><Icon name="settings" size={14} /></button>
+                          <button className="icon-btn" style={{ background: "var(--surface)", width: 32, height: 32, color: "var(--red)" }} onClick={() => doVoid(b)}><Icon name="close" size={14} /></button>
+                          <button className="btn" style={{ width: "auto", padding: "7px 14px", borderRadius: 999, fontSize: 12.5 }} onClick={() => { setPayFor(b); setPayAmt(b.due_amount); }}>Pay</button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-        </div>
-      )) : <div className="card card-pad"><div className="empty">No bills yet.</div></div>}
+        );
+      }) : <div className="card card-pad"><div className="empty">No unpaid bills. All clear!</div></div>}
 
       <button className="fab" onClick={() => setShowNew(true)}><Icon name="plus" size={18} /> New Bill</button>
 
@@ -885,6 +1044,7 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
               <div className="field"><label>Bill amount</label><input type="number" inputMode="numeric" value={amount || ""} onChange={(e) => setAmount(+e.target.value)} /></div>
               <div className="field"><label>Paid now</label><input type="number" inputMode="numeric" value={paidNow || ""} onChange={(e) => setPaidNow(+e.target.value)} placeholder="0" /></div>
             </div>
+            <div className="field"><label>Due date (optional)</label><input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></div>
             <div className="total-preview">Due: {money(Math.max(0, (amount || 0) - (paidNow || 0)))}</div>
             <div className="btn-row"><button className="btn ghost" onClick={() => setShowNew(false)}>Cancel</button><button className="btn" onClick={saveBill}>Save bill</button></div>
           </div>
@@ -896,6 +1056,26 @@ function Bills({ branchId, shared, branchName }: { branchId: string; shared: Sha
             <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Outstanding: <b style={{ color: "var(--red)" }}>{money(payFor.due_amount)}</b></p>
             <div className="field"><label>Amount received</label><input type="number" inputMode="numeric" value={payAmt || ""} onChange={(e) => setPayAmt(+e.target.value)} /></div>
             <div className="btn-row"><button className="btn ghost" onClick={() => setPayFor(null)}>Cancel</button><button className="btn" onClick={savePay}>Record payment</button></div>
+          </div>
+        </Modal>
+      )}
+      {settleFor && (
+        <Modal title={`Pay — ${settleFor}`} onClose={() => setSettleFor(null)}>
+          <div className="form-grid">
+            <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Outstanding: <b style={{ color: "var(--red)" }}>{money(sum(settleBills, "due_amount"))}</b></p>
+            <div className="field"><label>Amount received</label><input type="number" inputMode="numeric" value={settleAmt} onChange={(e) => setSettleAmt(e.target.value === "" ? "" : +e.target.value)} /></div>
+            {Number(settleAmt) > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                <div className="t-label">This payment will clear</div>
+                {settlePreview.filter((x) => x.applied > 0).map(({ b, applied }) => (
+                  <div key={b.id} className="row" style={{ padding: "6px 0" }}>
+                    <span className="sub">{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"} (due {money(b.due_amount)})</span>
+                    <b style={{ color: "var(--green)" }}>{money(applied)}</b>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="btn-row"><button className="btn ghost" onClick={() => setSettleFor(null)}>Cancel</button><button className="btn" onClick={doSettle}>Confirm payment</button></div>
           </div>
         </Modal>
       )}
@@ -976,7 +1156,7 @@ function Customers({ branchId, shared }: { branchId: string; shared: SharedProps
 }
 function Daybook({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const today = rangeStart("today");
-  const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const sales = forTotals(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const purch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const expenses = live(useLiveQuery(() => localdb.expenses.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const inT = sum(sales.filter((s) => new Date(s.created_at).getTime() >= today), "total");

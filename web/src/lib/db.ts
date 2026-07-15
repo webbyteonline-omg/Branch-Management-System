@@ -33,18 +33,23 @@ export class LocalDB extends Dexie {
       expenses: "id, branch_id, created_at, _synced",
       settings: "id",
     });
+    // v4: products now sync offline too (staff can add/edit/delete their branch's products)
+    this.version(4).stores({
+      products: "id, branch_id, _synced",
+    });
   }
 }
 
 export const localdb = new LocalDB();
 
 export async function pendingCount(): Promise<number> {
-  const [s, p, c, b, e] = await Promise.all([
+  const [s, p, c, b, e, pr] = await Promise.all([
     localdb.sales.where("_synced").equals(0).count(),
     localdb.purchases.where("_synced").equals(0).count(),
     localdb.customers.where("_synced").equals(0).count(),
     localdb.bills.where("_synced").equals(0).count(),
     localdb.expenses.where("_synced").equals(0).count(),
+    localdb.products.where("_synced").equals(0).count(),
   ]);
-  return s + p + c + b + e;
+  return s + p + c + b + e + pr;
 }

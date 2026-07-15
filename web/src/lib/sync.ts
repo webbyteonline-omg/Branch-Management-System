@@ -23,7 +23,6 @@ export async function pullAll(profile: Profile): Promise<void> {
   ]);
 
   if (branches.data) await localdb.branches.bulkPut(branches.data as any);
-  if (products.data) await localdb.products.bulkPut(products.data as any);
   if (settings.data) await localdb.settings.put(settings.data as any);
 
   // Never overwrite a locally-unsynced row with the server copy.
@@ -41,6 +40,7 @@ export async function pullAll(profile: Profile): Promise<void> {
     if (toPut.length) await table.bulkPut(toPut);
   };
   await Promise.all([
+    products.data ? mergeKeep(localdb.products, products.data) : null,
     sales.data ? mergeKeep(localdb.sales, sales.data) : null,
     purchases.data ? mergeKeep(localdb.purchases, purchases.data) : null,
     customers.data ? mergeKeep(localdb.customers, customers.data) : null,
@@ -70,6 +70,7 @@ export async function pushPending(): Promise<{ pushed: number; errors: SyncError
   const errors: SyncError[] = [];
 
   const tables: { name: SyncTableName; table: any }[] = [
+    { name: "products", table: localdb.products },
     { name: "sales", table: localdb.sales },
     { name: "purchases", table: localdb.purchases },
     { name: "customers", table: localdb.customers },
@@ -92,7 +93,7 @@ export async function pushPending(): Promise<{ pushed: number; errors: SyncError
 
   return { pushed, errors };
 }
-type SyncTableName = "sales" | "purchases" | "customers" | "bills" | "expenses";
+type SyncTableName = "sales" | "purchases" | "customers" | "bills" | "expenses" | "products";
 
 /** Live updates so the owner's dashboard reflects branch activity instantly.
  *  Every insert/update/delete from any device is written into the local store,
@@ -102,7 +103,7 @@ type SyncTableName = "sales" | "purchases" | "customers" | "bills" | "expenses";
 export function subscribeRealtime(onChange: () => void) {
   const tables: Record<string, any> = {
     sales: localdb.sales, purchases: localdb.purchases, bills: localdb.bills,
-    expenses: localdb.expenses, customers: localdb.customers,
+    expenses: localdb.expenses, customers: localdb.customers, products: localdb.products,
   };
   let ch: ReturnType<typeof supabase.channel> | null = null;
   let stopped = false;

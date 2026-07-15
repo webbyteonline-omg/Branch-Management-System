@@ -4,7 +4,7 @@ import { localdb, pendingCount } from "../lib/db";
 import { Icon } from "../lib/icons";
 import { money, dateStr, timeStr, initials, rangeStart, prevRange, rangeLabel, pctDelta } from "../lib/format";
 import type { Range, Product, Settings } from "../lib/types";
-import { sum, topItems, shortBranch, live, deletedOnly, computeStock, type SharedProps } from "./shared";
+import { sum, topItems, shortBranch, live, deletedOnly, computeStock, forTotals, type SharedProps } from "./shared";
 import { Modal } from "./Modal";
 import { toast } from "./Toast";
 import { ChangePasswordModal, ResetStaffPassword, StaffManager } from "./Account";
@@ -80,6 +80,13 @@ export function Owner(p: SharedProps) {
   const rSales = useMemo(() => between(sales, from, to), [sales, from, to]);
   const rPurch = useMemo(() => between(purchases, from, to), [purchases, from, to]);
   const rExp = useMemo(() => between(expenses, from, to), [expenses, from, to]);
+  // "Totals-safe" variants: same as sales/bills but voided rows stripped out —
+  // use these for any sum/KPI/chart. Use the plain sales/bills/rSales for
+  // screens that need to keep voided rows visible (crossed out) like Sales
+  // History / Previous Bills, doing their own per-row exclusion when summing.
+  const salesT = useMemo(() => forTotals(salesAll), [salesAll]);
+  const billsT = useMemo(() => forTotals(billsAll), [billsAll]);
+  const rSalesT = useMemo(() => between(salesT, from, to), [salesT, from, to]);
   const bmap = useMemo(() => Object.fromEntries(branches.map((b) => [b.id, shortBranch(b.name)])), [branches]);
   const go = (v: View, b: string | null = null) => { setView(v); setBranchId(b); setOpen(false); };
 
@@ -158,16 +165,16 @@ export function Owner(p: SharedProps) {
               </div>
             )}
           </div>
-          {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales, rPurch, rExp, bills, sales, purchases, products, bmap, go, isMobile }} />}
-          {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync: p.onSync, isMobile }} />}
+          {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales: rSalesT, rPurch, rExp, bills: billsT, sales: salesT, purchases, products, bmap, go, isMobile }} />}
+          {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales: rSalesT, rPurch, rExp, bills: billsT, bmap, go, onSync: p.onSync, isMobile }} />}
           {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} branches={branches} onSync={p.onSync} />}
           {view === "ledger" && <LedgerPage custAll={custAll} bmap={bmap} onSync={p.onSync} isMobile={isMobile} />}
           {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} products={products} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
           {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
           {view === "products" && <ProductsPage prodAll={prodAll} online={p.online} branches={branches} onSync={p.onSync} />}
           {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} branches={branches} staffMap={staffMap} isMobile={isMobile} />}
-          {view === "daybook" && <DaybookPage rSales={rSales} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
-          {view === "reports" && <ReportsPage rSales={rSales} range={rangeText} staffMap={staffMap} />}
+          {view === "daybook" && <DaybookPage rSales={rSalesT} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
+          {view === "reports" && <ReportsPage rSales={rSalesT} range={rangeText} staffMap={staffMap} />}
           {view === "settings" && <SettingsPage settings={settings} onSync={p.onSync} branches={branches} />}
         </div>
       </div>
@@ -555,12 +562,11 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
 
   const save = async () => {
     if (!edit?.name?.trim()) return toast("Enter a product name");
-    const ok = await saveProduct(edit as any, online);
-    if (!ok) return toast(online ? "Could not save" : "Connect to internet to edit products");
-    toast("Product saved"); setEdit(null);
+    await saveProduct(edit as any);
+    toast("Product saved" + (online ? "" : " offline")); setEdit(null); onSync();
   };
-  const delProd = async (pr: Product) => { if (confirmDelete("product")) { await softDelete("products" as any, pr.id); toast("Deleted"); onSync(); } };
-  const restoreProd = async (pr: Product) => { await restoreRow("products" as any, pr.id); toast("Restored"); onSync(); };
+  const delProd = async (pr: Product) => { if (confirmDelete("product")) { await softDelete("products", pr.id); toast("Deleted"); onSync(); } };
+  const restoreProd = async (pr: Product) => { await restoreRow("products", pr.id); toast("Restored"); onSync(); };
   const exportCsv = () => downloadExcel("products", ["Name", "Branch", "Unit", "Cost", "Sale price", "Low stock at"],
     rows.map((pr) => [pr.name, pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All", pr.unit, pr.cost_price, pr.sale_price, pr.low_stock_at ?? 5]));
 
@@ -851,19 +857,21 @@ function SalesHistoryPage({ sales, bmap, branches, staffMap, isMobile }: any) {
   const [payFilter, setPayFilter] = useState<"all" | "cash" | "upi" | "credit">("all");
   const [q, setQ] = useState("");
 
-  // group sales into bills by bill_no
+  // group sales into bills by bill_no. Voided bills stay in the list
+  // (crossed out) but don't add to the group total or the KPI/CSV totals.
   const groups = new Map<string, any>();
   for (const s of sales) {
     if (payFilter !== "all" && (s.payment_mode || "cash") !== payFilter) continue;
     const key = s.bill_no || s.id;
-    const g = groups.get(key) || { key, br: s.branch_id, cust: s.customer_name || "Walk-in", pay: s.payment_mode || "cash", staff: s.created_by, t: s.created_at, items: [] as any[], total: 0 };
-    g.items.push(s); g.total += s.total;
+    const g = groups.get(key) || { key, br: s.branch_id, cust: s.customer_name || "Walk-in", pay: s.payment_mode || "cash", staff: s.created_by, t: s.created_at, items: [] as any[], total: 0, voided: false };
+    g.items.push(s);
+    if (s.void_at) g.voided = true; else g.total += s.total;
     groups.set(key, g);
   }
   let bills = [...groups.values()].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 200);
 
-  const exportCsv = () => downloadExcel("sales-bills", ["Bill", "Date", "Branch", "Customer", "Payment", "Staff", "Items", "Total"],
-    bills.map((g) => [g.key, dateStr(g.t) + " " + timeStr(g.t), bmap[g.br] || "", g.cust, g.pay.toUpperCase(), staffMap[g.staff] || "", g.items.length, g.total]));
+  const exportCsv = () => downloadExcel("sales-bills", ["Bill", "Date", "Branch", "Customer", "Payment", "Staff", "Items", "Total", "Status"],
+    bills.map((g) => [g.key, dateStr(g.t) + " " + timeStr(g.t), bmap[g.br] || "", g.cust, g.pay.toUpperCase(), staffMap[g.staff] || "", g.items.length, g.total, g.voided ? "VOID" : "OK"]));
 
   if (isMobile) {
     const filtered = q.trim() ? bills.filter((g) => (g.key + g.cust).toLowerCase().includes(q.toLowerCase())) : bills;
@@ -880,17 +888,18 @@ function SalesHistoryPage({ sales, bmap, branches, staffMap, isMobile }: any) {
           ))}
         </div>
         {filtered.length ? filtered.map((g) => (
-          <div className="card card-pad" key={g.key} style={{ marginBottom: 10 }}>
+          <div className="card card-pad" key={g.key} style={{ marginBottom: 10, opacity: g.voided ? .55 : 1 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <b>{g.key.startsWith("B-") ? g.key : "—"}</b>
+                  <b style={{ textDecoration: g.voided ? "line-through" : undefined }}>{g.key.startsWith("B-") ? g.key : "—"}</b>
                   <span className="b-tag">{bmap[g.br]}</span>
+                  {g.voided && <span className="status-pill warn" style={{ fontSize: 10 }}>VOID</span>}
                 </div>
                 <div className="sub">{dateStr(g.t)} · {timeStr(g.t)}</div>
               </div>
               <div style={{ textAlign: "right" }}>
-                <b style={{ fontSize: 16, color: "var(--accent)" }}>{money(g.total)}</b>
+                <b style={{ fontSize: 16, color: "var(--accent)", textDecoration: g.voided ? "line-through" : undefined }}>{money(g.total)}</b>
                 <div className="sub">via {g.pay.toUpperCase()}</div>
               </div>
             </div>
@@ -919,11 +928,11 @@ function SalesHistoryPage({ sales, bmap, branches, staffMap, isMobile }: any) {
         <div className="table-wrap"><table>
           <thead><tr><th>Bill</th><th>Date</th><th>Branch</th><th>Customer</th><th>Payment</th><th>Staff</th><th className="r">Total</th></tr></thead>
           <tbody>{bills.length ? bills.map((g) => (
-            <tr key={g.key}>
-              <td>{g.key.startsWith("B-") ? g.key : "—"}<div style={{ color: "var(--faint)", fontSize: 11 }}>{g.items.length} item{g.items.length === 1 ? "" : "s"}</div></td>
+            <tr key={g.key} style={{ opacity: g.voided ? .55 : 1 }}>
+              <td style={{ textDecoration: g.voided ? "line-through" : undefined }}>{g.key.startsWith("B-") ? g.key : "—"}<div style={{ color: "var(--faint)", fontSize: 11 }}>{g.items.length} item{g.items.length === 1 ? "" : "s"}</div></td>
               <td>{dateStr(g.t)} {timeStr(g.t)}</td><td><span className="b-tag">{bmap[g.br]}</span></td>
-              <td>{g.cust}</td><td><span className="badge role">{g.pay.toUpperCase()}</span></td><td>{staffMap[g.staff] || "—"}</td>
-              <td className="r amt in">{money(g.total)}</td>
+              <td>{g.cust}</td><td><span className={"badge " + (g.voided ? "void" : "role")}>{g.voided ? "VOID" : g.pay.toUpperCase()}</span></td><td>{staffMap[g.staff] || "—"}</td>
+              <td className="r amt in" style={{ textDecoration: g.voided ? "line-through" : undefined }}>{money(g.total)}</td>
             </tr>
           )) : <tr><td colSpan={7}><div className="empty">No bills in this period.</div></td></tr>}</tbody>
         </table></div>
