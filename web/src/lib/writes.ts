@@ -6,11 +6,15 @@ const uuid = () => crypto.randomUUID();
 
 type SyncTable = "sales" | "purchases" | "customers" | "bills" | "expenses" | "products";
 
-/** Soft delete — never actually removes data. Sets deleted_at and re-syncs. */
-export async function softDelete(table: SyncTable, id: string): Promise<void> {
+/** Soft delete — never actually removes data. Sets deleted_at and re-syncs.
+ *  editorTag: pass e.g. "Main Office" when the Owner performs the delete
+ *  (as opposed to the branch's own staff) so the row carries a small,
+ *  visible note about who touched it. Left undefined for normal staff
+ *  actions — no note is added or changed in that case. */
+export async function softDelete(table: SyncTable, id: string, editorTag?: string): Promise<void> {
   const row: any = await (localdb as any)[table].get(id);
   if (!row) return;
-  await (localdb as any)[table].put({ ...row, deleted_at: new Date().toISOString(), _synced: 0 });
+  await (localdb as any)[table].put({ ...row, deleted_at: new Date().toISOString(), _synced: 0, ...(editorTag ? { edited_note: `${editorTag} deleted this` } : {}) });
 }
 export async function restoreRow(table: SyncTable, id: string): Promise<void> {
   const row: any = await (localdb as any)[table].get(id);
@@ -18,9 +22,10 @@ export async function restoreRow(table: SyncTable, id: string): Promise<void> {
   await (localdb as any)[table].put({ ...row, deleted_at: null, _synced: 0 });
 }
 
-/** Edit any row — saves locally and re-syncs (upsert overwrites the server copy). */
-export async function saveEdit(table: SyncTable, row: any): Promise<void> {
-  await (localdb as any)[table].put({ ...row, _synced: 0 });
+/** Edit any row — saves locally and re-syncs (upsert overwrites the server copy).
+ *  editorTag: see softDelete — stamps a small "X edited this" note on the row. */
+export async function saveEdit(table: SyncTable, row: any, editorTag?: string): Promise<void> {
+  await (localdb as any)[table].put({ ...row, _synced: 0, ...(editorTag ? { edited_note: `${editorTag} edited this` } : {}) });
 }
 
 /** Add a shop expense — offline-first. */
@@ -325,7 +330,7 @@ export async function saveProduct(p: Partial<Product> & { name: string }, branch
     low_stock_at: Number(p.low_stock_at ?? 5),
     branch_id: p.branch_id !== undefined ? p.branch_id : (branchId ?? null),
     pieces_per_box: p.pieces_per_box ? Number(p.pieces_per_box) : null, active: true,
-    deleted_at: null, _synced: 0,
+    deleted_at: null, edited_note: p.edited_note ?? null, _synced: 0,
   };
   await localdb.products.put(row);
   return true;

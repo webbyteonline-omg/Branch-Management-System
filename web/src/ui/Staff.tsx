@@ -208,12 +208,17 @@ function StaffStock({ branchId }: { branchId: string }) {
   const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const purch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"" | "out" | "low" | "in">("");
 
-  const rows = products
+  const allRows = products
     .map((pr) => ({ ...pr, stock: computeStock(pr.id, branchId, sales, purch) }))
     .filter((pr) => pr.name.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const lowCount = rows.filter((r) => r.stock <= (r.low_stock_at ?? 5)).length;
+  const statusOf = (r: any) => r.stock <= 0 ? "out" : r.stock <= (r.low_stock_at ?? 5) ? "low" : "in";
+  const rows = statusFilter ? allRows.filter((r) => statusOf(r) === statusFilter) : allRows;
+  const outCount = allRows.filter((r) => statusOf(r) === "out").length;
+  const lowCount = allRows.filter((r) => statusOf(r) === "low").length;
+  const inCount = allRows.filter((r) => statusOf(r) === "in").length;
 
   return (
     <>
@@ -221,10 +226,12 @@ function StaffStock({ branchId }: { branchId: string }) {
         <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={17} /></span>
         <input style={{ paddingLeft: 38, height: 48, borderRadius: 12 }} placeholder="Search product name…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
-      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 16 }}>
-        <div className="stat" style={{ textAlign: "center" }}><div className="label">Total Products</div><div className="value" style={{ fontSize: 19, color: "var(--accent)" }}>{rows.length}</div></div>
-        <div className="stat" style={{ textAlign: "center", borderLeft: lowCount > 0 ? "4px solid var(--red)" : undefined }}><div className="label">Low Stock</div><div className="value" style={{ fontSize: 19, color: lowCount > 0 ? "var(--red)" : "var(--green)" }}>{lowCount}</div></div>
+      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 16 }}>
+        <div className="stat" style={{ textAlign: "center", cursor: "pointer", outline: statusFilter === "in" ? "2px solid var(--green)" : undefined, outlineOffset: -2 }} onClick={() => setStatusFilter(statusFilter === "in" ? "" : "in")}><div className="label">In Stock</div><div className="value" style={{ fontSize: 19, color: "var(--green)" }}>{inCount}</div></div>
+        <div className="stat" style={{ textAlign: "center", cursor: "pointer", outline: statusFilter === "low" ? "2px solid var(--amber)" : undefined, outlineOffset: -2 }} onClick={() => setStatusFilter(statusFilter === "low" ? "" : "low")}><div className="label">Low Stock</div><div className="value" style={{ fontSize: 19, color: lowCount > 0 ? "var(--amber)" : "var(--muted)" }}>{lowCount}</div></div>
+        <div className="stat" style={{ textAlign: "center", cursor: "pointer", outline: statusFilter === "out" ? "2px solid var(--red)" : undefined, outlineOffset: -2 }} onClick={() => setStatusFilter(statusFilter === "out" ? "" : "out")}><div className="label">Out of Stock</div><div className="value" style={{ fontSize: 19, color: outCount > 0 ? "var(--red)" : "var(--muted)" }}>{outCount}</div></div>
       </div>
+      {statusFilter && <button className="btn ghost" style={{ width: "auto", padding: "6px 14px", fontSize: 12.5, marginBottom: 12 }} onClick={() => setStatusFilter("")}>✕ Clear filter</button>}
       {rows.length ? rows.map((pr) => {
         const low = pr.stock <= (pr.low_stock_at ?? 5);
         return (

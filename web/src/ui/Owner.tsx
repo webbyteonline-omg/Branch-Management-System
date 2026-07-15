@@ -19,6 +19,7 @@ import { SyncStatusModal } from "./SyncStatus";
 
 type View = "dashboard" | "branch" | "customers" | "ledger" | "purchases" | "inventory" | "products" | "saleshistory" | "daybook" | "reports" | "settings";
 type ORange = Range | "custom";
+type Scope = "seppa" | "dirang" | "all";
 const between = (rows: any[], from: number, to: number) => rows.filter((r) => { const t = new Date(r.created_at).getTime(); return t >= from && t <= to; });
 const inRange = (rows: any[], from: number) => rows.filter((r) => new Date(r.created_at).getTime() >= from);
 const confirmDelete = (what: string) => window.confirm(`Delete this ${what}? It moves to deleted items and can be restored.`);
@@ -57,6 +58,9 @@ export function Owner(p: SharedProps) {
   const [branchId, setBranchId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [showSync, setShowSync] = useState(false);
+  // Landing choice: which branch (or "all" combined) the owner is working in.
+  // null = show the 3-way landing screen. Every page below is scoped to this.
+  const [scope, setScope] = useState<Scope | null>(null);
 
   const branches = useLiveQuery(() => localdb.branches.toArray(), [], []);
   const salesAll = useLiveQuery(() => localdb.sales.toArray(), [], []);
@@ -92,10 +96,32 @@ export function Owner(p: SharedProps) {
   const bmap = useMemo(() => Object.fromEntries(branches.map((b) => [b.id, shortBranch(b.name)])), [branches]);
   const go = (v: View, b: string | null = null) => { setView(v); setBranchId(b); setOpen(false); };
 
-  const navItems: [string, string, string][] = [
-    ["dashboard", "Dashboard", "dashboard"],
-    ["branch:seppa", "Seppa Branch", "branch"],
-    ["branch:dirang", "Dirang Branch", "pin"],
+  // ---- scope: everything below this point is filtered to the branch (or
+  // both, for "all") the owner picked on the landing screen. Every existing
+  // page component keeps working unmodified — it just now only ever sees
+  // rows from the branches in scope. ----
+  const scopedBranchIds: string[] | null = scope && scope !== "all" ? [scope] : null; // null = no filtering (both branches)
+  const inScope = <T extends { branch_id?: string | null }>(rows: T[]) =>
+    scopedBranchIds ? rows.filter((r) => r.branch_id && scopedBranchIds.includes(r.branch_id)) : rows;
+  const sBranches = useMemo(() => scopedBranchIds ? branches.filter((b) => scopedBranchIds.includes(b.id)) : branches, [branches, scope]);
+  const sSales = useMemo(() => inScope(sales), [sales, scope]);
+  const sSalesT = useMemo(() => inScope(salesT), [salesT, scope]);
+  const sRSales = useMemo(() => inScope(rSales), [rSales, scope]);
+  const sRSalesT = useMemo(() => inScope(rSalesT), [rSalesT, scope]);
+  const sPurchases = useMemo(() => inScope(purchases), [purchases, scope]);
+  const sPurchAll = useMemo(() => inScope(purchAll), [purchAll, scope]);
+  const sRPurch = useMemo(() => inScope(rPurch), [rPurch, scope]);
+  const sBills = useMemo(() => inScope(bills), [bills, scope]);
+  const sBillsT = useMemo(() => inScope(billsT), [billsT, scope]);
+  const sExpenses = useMemo(() => inScope(expenses), [expenses, scope]);
+  const sRExp = useMemo(() => inScope(rExp), [rExp, scope]);
+  const sCustAll = useMemo(() => inScope(custAll), [custAll, scope]);
+  const sProdAll = useMemo(() => scopedBranchIds ? prodAll.filter((pr) => !pr.branch_id || scopedBranchIds.includes(pr.branch_id)) : prodAll, [prodAll, scope]);
+  const sProducts = useMemo(() => scopedBranchIds ? products.filter((pr) => !pr.branch_id || scopedBranchIds.includes(pr.branch_id)) : products, [products, scope]);
+  const scopeLabel = scope === "seppa" ? "Seppa Branch" : scope === "dirang" ? "Dirang Branch" : "All Branches";
+
+  const navItems: [View, string, string][] = [
+    ["dashboard", scope === "all" ? "Overview" : "Branch Overview", "dashboard"],
     ["saleshistory", "Sell / Bills", "sales"],
     ["purchases", "Purchases", "cart"],
     ["ledger", "Ledger", "book"],
@@ -106,16 +132,46 @@ export function Owner(p: SharedProps) {
     ["reports", "Reports", "reports"],
     ["settings", "Settings", "settings"],
   ];
-  const activeKey = view === "branch" ? "branch:" + branchId : view;
+
+  // ---- landing screen: pick Seppa / Dirang / All Branches before anything else ----
+  if (!scope) {
+    const realBranches = branches.filter((b) => b.id !== "ho");
+    const cards: { key: Scope; label: string; sub: string; icon: string }[] = [
+      ...realBranches.map((b) => ({ key: b.id as Scope, label: b.name, sub: `Go to ${shortBranch(b.name)} dashboard`, icon: "branch" })),
+      { key: "all", label: "All Branches", sub: "Combined totals across every branch", icon: "dashboard" },
+    ];
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24, background: "var(--bg)" }}>
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{ fontSize: 22, fontWeight: 800, color: "var(--accent)" }}>{settings?.company || "ProTrade POS"}</div>
+          <div style={{ fontSize: 14, color: "var(--muted)", marginTop: 4 }}>Welcome, {p.profile.name} — where do you want to work?</div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 16, width: "100%", maxWidth: 720 }}>
+          {cards.map((c) => (
+            <button key={c.key} className="card card-pad" style={{ textAlign: "left", padding: 22, border: "1px solid var(--line)" }} onClick={() => { setScope(c.key); go("dashboard"); }}>
+              <div style={{ width: 44, height: 44, borderRadius: 12, background: "var(--accent-soft)", color: "var(--accent)", display: "grid", placeItems: "center", marginBottom: 14 }}>
+                <Icon name={c.icon} size={22} />
+              </div>
+              <div style={{ fontSize: 17, fontWeight: 700 }}>{c.label}</div>
+              <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 4 }}>{c.sub}</div>
+            </button>
+          ))}
+        </div>
+        <button className="btn ghost" style={{ marginTop: 28, width: "auto", padding: "9px 18px" }} onClick={p.onLogout}>Logout</button>
+      </div>
+    );
+  }
 
   return (
     <div className="shell">
       <aside className={"sidebar pt-sidebar" + (open ? " open" : "")}>
-        <div className="brand-pt"><b>{settings?.company || "ProTrade POS"}</b><span>Admin Dashboard</span></div>
+        <div className="brand-pt"><b>{settings?.company || "ProTrade POS"}</b><span>{scopeLabel}</span></div>
+        <button className="pt-nav-item" style={{ margin: "0 10px 8px", color: "var(--accent)", fontWeight: 700 }} onClick={() => setScope(null)}>
+          <Icon name="chevronDown" size={16} /><span>Switch branch</span>
+        </button>
         <nav className="pt-nav">
-          {navItems.map(([key, label, ic], i) => (
-            <button key={key} className={"pt-nav-item" + (activeKey === key ? " active" : "")}
-              onClick={() => key.startsWith("branch:") ? go("branch", key.split(":")[1]) : go(key as View)}>
+          {navItems.map(([key, label, ic]) => (
+            <button key={key} className={"pt-nav-item" + (view === key ? " active" : "")} onClick={() => go(key)}>
               <Icon name={ic} size={19} /><span>{label}</span>
             </button>
           ))}
@@ -135,6 +191,9 @@ export function Owner(p: SharedProps) {
           </div>
           <button className="hbtn hide-desktop" onClick={() => setOpen(true)}><Icon name="menu" /></button>
           <div className="header-right">
+            <button className="hbtn" onClick={p.onSync} title="Refresh now" disabled={p.syncing} style={{ flexShrink: 0 }}>
+              <Icon name="refresh" size={17} className={p.syncing ? "spin" : ""} />
+            </button>
             <button className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync status">
               <span className="dot" /><span className="hide-mobile">{p.syncError ? "Sync error" : pending > 0 ? `${pending} to sync` : "All synced"}</span>
             </button>
@@ -147,11 +206,11 @@ export function Owner(p: SharedProps) {
           <div className="pt-content-head">
             <div>
               <h2 className="pt-page-title">{
-                { dashboard: "Global Overview", branch: "Branch Detail", customers: "Customers", ledger: "Ledger",
+                { dashboard: scopeLabel + " Overview", branch: "Branch Detail", customers: "Customers", ledger: "Ledger",
                   purchases: "Purchase Register", inventory: "Stock & Inventory", products: "Products",
                   saleshistory: "Sales History", daybook: "Day Book", reports: "Reports", settings: "Settings" }[view]
               }</h2>
-              <p className="pt-page-sub">{view === "dashboard" ? "Aggregated data from all operational branches" : rangeText}</p>
+              <p className="pt-page-sub">{view === "dashboard" ? (scope === "all" ? "Aggregated data from all operational branches" : `Everything for ${scopeLabel}`) : rangeText}</p>
             </div>
             <div className="seg">
               {(["today", "week", "month"] as Range[]).map((r) => (
@@ -167,19 +226,24 @@ export function Owner(p: SharedProps) {
               </div>
             )}
           </div>
-          {view === "dashboard" && <Dashboard {...{ range, isCustom, label: rangeText, branches, rSales: rSalesT, rPurch, rExp, bills: billsT, sales: salesT, purchases, products, bmap, go, isMobile }} />}
-          {view === "branch" && branchId && <BranchDetail {...{ range: rangeText, branchId, branches, rSales: rSalesT, rPurch, rExp, bills: billsT, bmap, go, onSync: p.onSync, isMobile }} />}
-          {view === "customers" && <CustomersPage custAll={custAll} bmap={bmap} branches={branches} onSync={p.onSync} />}
-          {view === "ledger" && <LedgerPage custAll={custAll} bmap={bmap} onSync={p.onSync} isMobile={isMobile} />}
-          {view === "purchases" && <PurchasesPage rPurch={rPurch} purchAll={purchAll} bmap={bmap} label={rangeText} branches={branches} products={products} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
-          {view === "inventory" && <InventoryPage products={products} sales={sales} purchases={purchases} branches={branches} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
-          {view === "products" && <ProductsPage prodAll={prodAll} online={p.online} branches={branches} onSync={p.onSync} />}
-          {view === "saleshistory" && <SalesHistoryPage sales={rSales} bmap={bmap} branches={branches} staffMap={staffMap} isMobile={isMobile} />}
-          {view === "daybook" && <DaybookPage rSales={rSalesT} rPurch={rPurch} rExp={rExp} bmap={bmap} range={rangeText} branches={branches} userId={p.profile.id} onSync={p.onSync} />}
-          {view === "reports" && <ReportsPage rSales={rSalesT} range={rangeText} staffMap={staffMap} />}
-          {view === "settings" && <SettingsPage settings={settings} onSync={p.onSync} branches={branches} />}
+          {view === "dashboard" && scope !== "all" && sBranches[0] && (
+            <BranchDetail {...{ range: rangeText, branchId: sBranches[0].id, branches: sBranches, rSales: sRSalesT, rPurch: sRPurch, rExp: sRExp, bills: sBillsT, bmap, go: () => {}, onSync: p.onSync, isMobile, hideBack: true }} />
+          )}
+          {view === "dashboard" && scope === "all" && (
+            <Dashboard {...{ range, isCustom, label: rangeText, branches: sBranches, rSales: sRSalesT, rPurch: sRPurch, rExp: sRExp, bills: sBillsT, sales: sSalesT, purchases: sPurchases, products: sProducts, bmap, go, isMobile }} />
+          )}
+          {view === "customers" && <CustomersPage custAll={sCustAll} bmap={bmap} branches={sBranches} onSync={p.onSync} />}
+          {view === "ledger" && <LedgerPage custAll={sCustAll} bmap={bmap} onSync={p.onSync} isMobile={isMobile} />}
+          {view === "purchases" && <PurchasesPage rPurch={sRPurch} purchAll={sPurchAll} bmap={bmap} label={rangeText} branches={sBranches} products={sProducts} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
+          {view === "inventory" && <InventoryPage products={sProducts} sales={sSales} purchases={sPurchases} branches={sBranches} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
+          {view === "products" && <ProductsPage prodAll={sProdAll} online={p.online} branches={sBranches} onSync={p.onSync} />}
+          {view === "saleshistory" && <SalesHistoryPage sales={sRSales} bmap={bmap} branches={sBranches} staffMap={staffMap} isMobile={isMobile} />}
+          {view === "daybook" && <DaybookPage rSales={sRSalesT} rPurch={sRPurch} rExp={sRExp} bmap={bmap} range={rangeText} branches={sBranches} userId={p.profile.id} onSync={p.onSync} />}
+          {view === "reports" && <ReportsPage rSales={sRSalesT} range={rangeText} staffMap={staffMap} branches={sBranches} />}
+          {view === "settings" && <SettingsPage settings={settings} onSync={p.onSync} branches={sBranches} />}
         </div>
       </div>
+      {showSync && <SyncStatusModal shared={p} onClose={() => setShowSync(false)} />}
     </div>
   );
 }
@@ -313,9 +377,13 @@ function Dashboard({ range, isCustom, label, branches, rSales, rPurch, rExp, bil
   );
 }
 
-function Kpi({ label, value, delta, icon, color, bg }: { label: string; value: string; delta: { cls: string; txt: string }; icon: string; color: string; bg: string }) {
+function Kpi({ label, value, delta, icon, color, bg, onClick, active }: { label: string; value: string; delta: { cls: string; txt: string }; icon: string; color: string; bg: string; onClick?: () => void; active?: boolean }) {
   return (
-    <div className="kpi-card">
+    <div
+      className="kpi-card"
+      onClick={onClick}
+      style={onClick ? { cursor: "pointer", outline: active ? `2px solid ${color}` : undefined, outlineOffset: -2 } : undefined}
+    >
       <div className="kpi-top">
         <div className="kpi-ic" style={{ background: bg, color }}><Icon name={icon} size={19} /></div>
         <span className={"kpi-badge " + delta.cls}>{delta.txt}</span>
@@ -374,13 +442,13 @@ function TxnTable({ rSales, rPurch, bmap }: any) {
 }
 
 /* ---------- branch detail ---------- */
-function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync, isMobile }: any) {
+function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, bmap, go, onSync, isMobile, hideBack }: any) {
   const b = branches.find((x: any) => x.id === branchId);
   const bs = rSales.filter((s: any) => s.branch_id === branchId);
   const bp = rPurch.filter((s: any) => s.branch_id === branchId);
   const be = rExp.filter((s: any) => s.branch_id === branchId);
   const due = sum(bills.filter((x: any) => x.branch_id === branchId && x.status === "unpaid"), "due_amount");
-  const del = async (table: any, id: string, what: string) => { if (confirmDelete(what)) { await softDelete(table, id); toast("Deleted"); onSync(); } };
+  const del = async (table: any, id: string, what: string) => { if (confirmDelete(what)) { await softDelete(table, id, "Main Office"); toast("Deleted"); onSync(); } };
   const items = [
     ...bs.map((s: any) => ({ id: s.id, table: "sales", t: s.created_at, label: `Sale · ${s.product_name} × ${s.qty}`, who: s.customer_name, amt: s.total, dir: "in", what: "sale" })),
     ...bp.map((x: any) => ({ id: x.id, table: "purchases", t: x.created_at, label: `Purchase · ${x.product_name} × ${x.qty}`, who: x.supplier, amt: x.total, dir: "out", what: "purchase" })),
@@ -393,7 +461,7 @@ function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, 
   if (isMobile) {
     return (
       <>
-        <button className="back" onClick={() => go("dashboard")}>‹ Back</button>
+        {!hideBack && <button className="back" onClick={() => go("dashboard")}>‹ Back</button>}
         <h1 className="page-title" style={{ fontSize: 20 }}>{b.name}</h1>
         <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr", marginTop: 10 }}>
           <div className="stat"><div className="label">Sales</div><div className="value" style={{ color: "var(--green)", fontSize: 18 }}>{money(sum(bs, "total"))}</div></div>
@@ -418,7 +486,7 @@ function BranchDetail({ range, branchId, branches, rSales, rPurch, rExp, bills, 
 
   return (
     <>
-      <button className="back" onClick={() => go("dashboard")}>‹ Back to overview</button>
+      {!hideBack && <button className="back" onClick={() => go("dashboard")}>‹ Back to overview</button>}
       <h1 className="page-title">{b.name}</h1>
       <p className="page-sub">{b.location} · {rangeLabel(range).toLowerCase()}</p>
       <div className="kpi-grid">
@@ -456,7 +524,7 @@ function CustomersPage({ custAll, bmap, branches, onSync }: any) {
   const exportCsv = () => downloadExcel("customers", ["Name", "Phone", "Branch", "Balance due"], rows.map((c: any) => [c.name, c.phone || "", bmap[c.branch_id] || "", c.balance_due]));
   const act = async (c: any) => {
     if (showDeleted) { await restoreRow("customers", c.id); toast("Restored"); }
-    else if (confirmDelete("customer")) { await softDelete("customers", c.id); toast("Deleted"); }
+    else if (confirmDelete("customer")) { await softDelete("customers", c.id, "Main Office"); toast("Deleted"); }
     onSync();
   };
   return (
@@ -564,10 +632,10 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
 
   const save = async () => {
     if (!edit?.name?.trim()) return toast("Enter a product name");
-    await saveProduct(edit as any);
+    await saveProduct({ ...edit, edited_note: "Main Office edited this" } as any);
     toast("Product saved" + (online ? "" : " offline")); setEdit(null); onSync();
   };
-  const delProd = async (pr: Product) => { if (confirmDelete("product")) { await softDelete("products", pr.id); toast("Deleted"); onSync(); } };
+  const delProd = async (pr: Product) => { if (confirmDelete("product")) { await softDelete("products", pr.id, "Main Office"); toast("Deleted"); onSync(); } };
   const restoreProd = async (pr: Product) => { await restoreRow("products", pr.id); toast("Restored"); onSync(); };
   const exportCsv = () => downloadExcel("products", ["Name", "Branch", "Unit", "Cost", "Sale price", "Pieces/box", "Box price", "Low stock at"],
     rows.map((pr) => [pr.name, pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All", pr.unit, pr.cost_price, pr.sale_price, pr.pieces_per_box || "", pr.box_price || "", pr.low_stock_at ?? 5]));
@@ -588,7 +656,7 @@ function ProductsPage({ prodAll, online, branches, onSync }: any) {
           <tbody>
             {rows.length ? rows.map((pr: Product) => (
               <tr key={pr.id}>
-                <td>{pr.name}</td>
+                <td>{pr.name}{pr.edited_note && <div style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 2 }}>{pr.edited_note}</div>}</td>
                 <td><span className="b-tag">{pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All"}</span></td>
                 <td>{pr.unit}</td>
                 <td className="r">{money(pr.cost_price)}</td>
@@ -661,7 +729,7 @@ function PurchasesPage({ rPurch, purchAll, bmap, label, branches, products, user
 
   const act = async (x: any) => {
     if (showDeleted) { await restoreRow("purchases", x.id); toast("Restored"); }
-    else if (confirmDelete("purchase")) { await softDelete("purchases", x.id); toast("Deleted"); }
+    else if (confirmDelete("purchase")) { await softDelete("purchases", x.id, "Main Office"); toast("Deleted"); }
     onSync();
   };
   const exportXls = () => downloadExcel("purchases", ["Date", "Branch", "Supplier", "Item", "Qty", "Cost each", "Total", "Bill no", "Payment", "Note"],
@@ -764,6 +832,7 @@ function InventoryPage({ products, sales, purchases, branches, userId, onSync, i
   const [delta, setDelta] = useState(0);
   const [reason, setReason] = useState("");
   const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"" | "out" | "low" | "in">("");
 
   const doAdjust = async () => {
     if (!delta) return toast("Enter a +/- quantity");
@@ -771,8 +840,16 @@ function InventoryPage({ products, sales, purchases, branches, userId, onSync, i
     toast("Stock adjusted"); setAdj(null); setDelta(0); setReason(""); onSync();
   };
 
+  const statusOf = (pr: any) => {
+    const total = brs.reduce((s: number, b: any) => s + computeStock(pr.id, b.id, sales, purchases), 0);
+    if (total <= 0) return "out";
+    if (total <= (pr.low_stock_at ?? 5)) return "low";
+    return "in";
+  };
+  const byStatus = (list: any[]) => statusFilter ? list.filter((pr: any) => statusOf(pr) === statusFilter) : list;
+
   if (isMobile) {
-    const rows = products.filter((pr: any) => pr.name.toLowerCase().includes(q.toLowerCase()));
+    const rows = byStatus(products.filter((pr: any) => pr.name.toLowerCase().includes(q.toLowerCase())));
     const globalValue = rows.reduce((a: number, pr: any) => a + brs.reduce((s: number, b: any) => s + computeStock(pr.id, b.id, sales, purchases), 0) * pr.sale_price, 0);
     return (
       <>
@@ -780,6 +857,11 @@ function InventoryPage({ products, sales, purchases, branches, userId, onSync, i
         <div style={{ background: "var(--accent)", color: "#fff", borderRadius: 14, padding: 16, marginBottom: 16 }}>
           <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".6px", opacity: .85 }}>Global Stock Value</span>
           <div style={{ fontSize: 24, fontWeight: 800, marginTop: 4 }}>{money(globalValue)}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+          {([["", "All"], ["in", "In Stock"], ["low", "Low Stock"], ["out", "Out of Stock"]] as const).map(([k, label]) => (
+            <button key={k} className={statusFilter === k ? "btn" : "btn ghost"} style={{ width: "auto", padding: "7px 14px", fontSize: 12.5 }} onClick={() => setStatusFilter(k)}>{label}</button>
+          ))}
         </div>
         {rows.length ? rows.map((pr: any) => {
           const per = brs.map((b: any) => ({ b, qty: computeStock(pr.id, b.id, sales, purchases) }));
@@ -819,16 +901,17 @@ function InventoryPage({ products, sales, purchases, branches, userId, onSync, i
   }
 
   return (
-    <><h1 className="page-title">Inventory</h1><p className="page-sub">Live stock per branch (purchases in − sales out). Adjust for opening stock or wastage.</p>
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
-        <Kpi label="Total SKU Items" value={String(products.length)} delta={{ cls: "up", txt: "across catalog" }} icon="boxIcon" color="var(--accent)" bg="var(--accent-soft)" />
-        <Kpi label="Stock Value" value={money(products.reduce((a: number, pr: any) => a + brs.reduce((s: number, b: any) => s + computeStock(pr.id, b.id, sales, purchases), 0) * pr.sale_price, 0))} delta={{ cls: "up", txt: "live valuation" }} icon="wallet" color="var(--green)" bg="var(--green-soft)" />
-        <Kpi label="Out of Stock" value={String(products.filter((pr: any) => brs.reduce((s: number, b: any) => s + computeStock(pr.id, b.id, sales, purchases), 0) <= 0).length)} delta={{ cls: "down", txt: "items" }} icon="warning" color="var(--red)" bg="var(--red-soft)" />
+    <><h1 className="page-title">Inventory</h1><p className="page-sub">Live stock per branch (purchases in − sales out). Adjust for opening stock or wastage. Tap a card below to filter.</p>
+      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+        <Kpi label="Total SKU Items" value={String(products.length)} delta={{ cls: "up", txt: "across catalog" }} icon="boxIcon" color="var(--accent)" bg="var(--accent-soft)" onClick={() => setStatusFilter("")} active={statusFilter === ""} />
+        <Kpi label="In Stock" value={String(products.filter((pr: any) => statusOf(pr) === "in").length)} delta={{ cls: "up", txt: "healthy" }} icon="check" color="var(--green)" bg="var(--green-soft)" onClick={() => setStatusFilter(statusFilter === "in" ? "" : "in")} active={statusFilter === "in"} />
+        <Kpi label="Low Stock" value={String(products.filter((pr: any) => statusOf(pr) === "low").length)} delta={{ cls: "down", txt: "items" }} icon="warning" color="var(--amber)" bg="var(--amber-soft)" onClick={() => setStatusFilter(statusFilter === "low" ? "" : "low")} active={statusFilter === "low"} />
+        <Kpi label="Out of Stock" value={String(products.filter((pr: any) => statusOf(pr) === "out").length)} delta={{ cls: "down", txt: "items" }} icon="warning" color="var(--red)" bg="var(--red-soft)" onClick={() => setStatusFilter(statusFilter === "out" ? "" : "out")} active={statusFilter === "out"} />
       </div>
       <div className="card"><div className="table-wrap"><table>
         <thead><tr><th>Product</th>{brs.map((b: any) => <th key={b.id} className="r">{shortBranch(b.name)}</th>)}<th className="r">Total</th><th className="r"></th></tr></thead>
         <tbody>
-          {products.length ? products.map((pr: any) => {
+          {byStatus(products).length ? byStatus(products).map((pr: any) => {
             const per = brs.map((b: any) => ({ b, qty: computeStock(pr.id, b.id, sales, purchases) }));
             const total = per.reduce((a: number, x: any) => a + x.qty, 0);
             return (
@@ -954,7 +1037,7 @@ function DaybookPage({ rSales, rPurch, rExp, bmap, range, branches, userId, onSy
   const [editRow, setEditRow] = useState<{ table: any; row: any } | null>(null);
   const [addE, setAddE] = useState(false);
   const inT = sum(rSales, "total"), outP = sum(rPurch, "total"), outE = sum(rExp, "amount");
-  const del = async (table: any, id: string, what: string) => { if (confirmDelete(what)) { await softDelete(table, id); toast("Deleted"); onSync(); } };
+  const del = async (table: any, id: string, what: string) => { if (confirmDelete(what)) { await softDelete(table, id, "Main Office"); toast("Deleted"); onSync(); } };
   const items = [
     ...rSales.map((s: any) => ({ table: "sales", id: s.id, row: s, t: s.created_at, br: s.branch_id, label: `Sale · ${s.product_name} × ${s.qty}`, amt: s.total, dir: "in", what: "sale" })),
     ...rPurch.map((x: any) => ({ table: "purchases", id: x.id, row: x, t: x.created_at, br: x.branch_id, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out", what: "purchase" })),
@@ -987,14 +1070,14 @@ function DaybookPage({ rSales, rPurch, rExp, bmap, range, branches, userId, onSy
 }
 
 /* ---------- reports ---------- */
-function ReportsPage({ rSales, range, staffMap }: any) {
+function ReportsPage({ rSales, range, staffMap, branches }: any) {
   const totals: Record<string, number> = {};
   rSales.forEach((s: any) => { totals[s.product_name] = (totals[s.product_name] || 0) + s.total; });
   const top = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 6);
   const max = Math.max(1, ...top.map((t) => t[1]));
-  const seppa = sum(rSales.filter((s: any) => s.branch_id === "seppa"), "total");
-  const dirang = sum(rSales.filter((s: any) => s.branch_id === "dirang"), "total");
-  const tot = Math.max(1, seppa + dirang);
+  const brs = (branches || []).filter((b: any) => b.id !== "ho");
+  const branchTotals = brs.map((b: any) => ({ id: b.id, name: shortBranch(b.name), val: sum(rSales.filter((s: any) => s.branch_id === b.id), "total") }));
+  const tot = Math.max(1, branchTotals.reduce((a: number, b: any) => a + b.val, 0));
   const staffTotals: Record<string, number> = {};
   rSales.forEach((s: any) => { const n = (staffMap && staffMap[s.created_by]) || "Unknown"; staffTotals[n] = (staffTotals[n] || 0) + s.total; });
   const staffTop = Object.entries(staffTotals).sort((a, b) => b[1] - a[1]);
@@ -1011,8 +1094,9 @@ function ReportsPage({ rSales, range, staffMap }: any) {
         <div className="card card-pad"><h3 style={{ margin: "0 0 16px" }}>Top products by revenue</h3>
           {top.length ? top.map(([n, v]) => <Bar key={n} label={n} val={v} color="var(--accent)" />) : <div className="empty">No data.</div>}</div>
         <div className="card card-pad"><h3 style={{ margin: "0 0 16px" }}>Branch contribution</h3>
-          <Bar label="Seppa" val={seppa} pct={(seppa / tot * 100).toFixed(0)} color="var(--green)" />
-          <Bar label="Dirang" val={dirang} pct={(dirang / tot * 100).toFixed(0)} color="var(--accent)" />
+          {branchTotals.length ? branchTotals.map((b: any, i: number) => (
+            <Bar key={b.id} label={b.name} val={b.val} pct={(b.val / tot * 100).toFixed(0)} color={i % 2 === 0 ? "var(--green)" : "var(--accent)"} />
+          )) : <div className="empty">No data.</div>}
         </div>
       </div>
       <div className="card card-pad" style={{ marginTop: 16 }}><h3 style={{ margin: "0 0 16px" }}>Sales by staff</h3>

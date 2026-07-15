@@ -42,10 +42,10 @@ const paths: Record<string, string> = {
   wallet: "M20 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2zM16 3H4a2 2 0 0 0-2 2v2h18",
 };
 
-export function Icon({ name, size = 19 }: { name: string; size?: number }) {
+export function Icon({ name, size = 19, className }: { name: string; size?: number; className?: string }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round">
+      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" className={className}>
       {(paths[name] || "").split("M").filter(Boolean).map((d, i) => <path key={i} d={"M" + d} />)}
     </svg>
   );

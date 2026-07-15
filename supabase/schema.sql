@@ -52,6 +52,7 @@ alter table public.products add column if not exists branch_id text references p
 alter table public.products add column if not exists pieces_per_box numeric(12,2);
 alter table public.products add column if not exists box_price numeric(12,2);       -- independent box sale price (bulk discount), null = not sold by box
 alter table public.products add column if not exists box_cost_price numeric(12,2);  -- cost per box, for margin reporting
+alter table public.products add column if not exists edited_note text;  -- e.g. "Main Office edited this"
 -- id was server-default before; staff now create products offline with a
 -- client-generated uuid, so upsert-by-id must work the same way sales/purchases do.
 alter table public.products alter column id drop default;
@@ -94,6 +95,7 @@ alter table public.sales add column if not exists void_snapshot jsonb;
 alter table public.sales add column if not exists box_qty numeric(12,2);   -- informational: boxes in this line (qty still holds total pieces)
 alter table public.sales add column if not exists pcs_qty numeric(12,2);   -- informational: loose pieces in this line
 alter table public.sales add column if not exists box_price numeric(12,2); -- informational: box price used, if any
+alter table public.sales add column if not exists edited_note text;        -- e.g. "Main Office edited this"
 
 create table if not exists public.purchases (
   id            uuid primary key,
@@ -114,6 +116,7 @@ create table if not exists public.purchases (
 alter table public.purchases add column if not exists invoice_no text;
 alter table public.purchases add column if not exists payment_mode text not null default 'cash';
 alter table public.purchases add column if not exists note text;
+alter table public.purchases add column if not exists edited_note text;
 
 create table if not exists public.customers (
   id          uuid primary key default gen_random_uuid(),
@@ -124,6 +127,7 @@ create table if not exists public.customers (
   created_at  timestamptz not null default now(),
   deleted_at  timestamptz
 );
+alter table public.customers add column if not exists edited_note text;
 
 create table if not exists public.bills (
   id            uuid primary key,
@@ -144,6 +148,7 @@ alter table public.bills add column if not exists bill_no text;
 alter table public.bills add column if not exists due_date timestamptz;
 alter table public.bills add column if not exists void_at timestamptz;
 alter table public.bills add column if not exists void_snapshot jsonb;
+alter table public.bills add column if not exists edited_note text;
 
 -- shop expenses (rent, transport, salary, etc.) — feeds the day book
 create table if not exists public.expenses (
@@ -156,6 +161,7 @@ create table if not exists public.expenses (
   created_at timestamptz not null default now(),
   deleted_at timestamptz
 );
+alter table public.expenses add column if not exists edited_note text;
 
 -- single-row company profile used on printed invoices
 create table if not exists public.app_settings (

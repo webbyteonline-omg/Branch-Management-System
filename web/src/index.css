@@ -316,6 +316,8 @@ tbody tr:hover { background: var(--surface-2); }
   padding: 12px 20px; border-radius: 12px; font-weight: 600; font-size: 14px; z-index: 60; box-shadow: var(--shadow-lg);
   animation: pop .22s ease; }
 @keyframes pop { from { transform: translate(-50%, 10px); opacity: 0; } }
+.spin { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 .hide-desktop { display: none; }
 
