@@ -219,6 +219,29 @@ input, select { font-family: inherit; font-size: 15px; }
   .btn { padding: 8px 12px !important; font-size: 13px; }
 }
 
+/* Global overflow guard: no page (mobile or desktop-shell-on-phone) should
+ * ever be able to push the viewport wider — .card-head rows with a search
+ * box + several buttons were the main offender (Products/Day Book/etc.),
+ * so on narrow screens that row wraps instead of forcing horizontal scroll. */
+@media (max-width: 900px) {
+  .content, .pt-content, .m-content { overflow-x: hidden; max-width: 100vw; }
+  .card-head { flex-wrap: wrap; gap: 10px; }
+  .card-head > div { flex-wrap: wrap; }
+  .card-head .search { flex: 1 1 140px; min-width: 0; }
+  .stats { grid-template-columns: 1fr 1fr; }
+  .grid-2 { grid-template-columns: 1fr; }
+  .branch-metrics { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 480px) {
+  .stats { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat { padding: 13px; }
+  .stat .value { font-size: 20px; }
+}
+/* Negative/₹ amounts must never break mid-number ("-" on one line, "4,800"
+ * on the next) — keep the whole figure on one line and let the container
+ * shrink the font instead if it's genuinely tight. */
+.stat .value, .amt, .kpi-value, .total-preview { white-space: nowrap; }
+
 /* stat cards */
 .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 22px; }
 .stat { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius);

@@ -49,7 +49,13 @@ supabase login
 supabase link --project-ref YOUR-PROJECT-REF
 supabase functions deploy admin-create-staff --no-verify-jwt
 supabase functions deploy admin-reset-password --no-verify-jwt
+supabase functions deploy admin-list-accounts --no-verify-jwt
+supabase functions deploy admin-update-account --no-verify-jwt
 ```
+
+`admin-list-accounts` and `admin-update-account` power **Settings → Manage Accounts**, where the owner can edit any account's name, User ID (login), and password — including their own — all in-app. No dashboard needed for day-to-day account changes.
+
+**Tip — real forgot-password:** by default every login ID maps to a fake `@branch.local` email, so Supabase's email-based password reset can't reach anyone. If you (the owner) set your own User ID to a real email address (e.g. `you@gmail.com`) from **Settings → Manage Accounts → Edit**, the login screen's "Forgot password?" link will send you a real reset email for that account. Staff can stay on simple IDs like `seppa` since the owner can always reset their password in-app.
 
 **`--no-verify-jwt` is required** — without it Supabase's gateway rejects the browser's CORS preflight (OPTIONS) request and you get a "blocked by CORS policy" error in the app. The functions still do their own auth (they verify the caller is the owner via their token), so security is unchanged.
 

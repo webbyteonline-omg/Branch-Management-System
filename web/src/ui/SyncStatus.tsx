@@ -50,6 +50,10 @@ export function SyncStatusModal({ shared, onClose }: { shared: SharedProps; onCl
           <b style={{ fontSize: 13 }}>{shared.syncing ? "Syncing…" : timeAgo(shared.lastSyncedAt)}</b>
         </div>
 
+        <div style={{ fontSize: 12, color: "var(--muted)", background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px" }}>
+          Weak signal area? Tap the <b>Online / Offline mode</b> button in the header to force offline saving on purpose — nothing will try to reach the network until you tap it again, then it syncs automatically.
+        </div>
+
         {breakdown.length > 0 && (
           <div>
             <div className="t-label" style={{ margin: "4px 0 6px" }}>Waiting to upload</div>
@@ -65,8 +69,8 @@ export function SyncStatusModal({ shared, onClose }: { shared: SharedProps; onCl
         )}
 
         <div className="btn-row">
-          <button className="btn ghost" onClick={onClose}>Close</button>
-          <button className="btn" disabled={!shared.online || shared.syncing} onClick={shared.onSync}>
+          <button type="button" className="btn ghost" onClick={() => onClose()}>Close</button>
+          <button type="button" className="btn" disabled={!shared.online || shared.syncing} onClick={() => shared.onSync()}>
             {shared.syncing ? "Syncing…" : "Sync now"}
           </button>
         </div>

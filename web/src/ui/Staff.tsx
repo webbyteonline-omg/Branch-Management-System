@@ -11,6 +11,7 @@ import { SyncStatusModal } from "./SyncStatus";
 import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, computeLineTotal, settleCustomerDues, saveProduct, voidBill, voidSaleGroup, type CartItem } from "../lib/writes";
 import { sum, live, forTotals, computeStock, productsForBranch, type SharedProps } from "./shared";
 import { BarChart } from "./Charts";
+import { downloadExcel } from "../lib/excel";
 import type { Purchase, Bill as BillT, Product as ProductT } from "../lib/types";
 
 const confirmDel = (what: string) => window.confirm(`Delete this ${what}? It can be restored by the owner.`);
@@ -96,8 +97,8 @@ export function Staff(p: SharedProps) {
               <button className="icon-btn" onClick={() => setShowMenu(false)}><Icon name="close" size={18} /></button>
             </div>
             <div className="modal-body" style={{ padding: 10, flex: 1, display: "flex", flexDirection: "column" }}>
-              <button className={"net-toggle " + (p.online ? "online" : "offline")} style={{ margin: "0 0 8px", width: "100%", padding: "10px 0" }} onClick={p.onToggleOnline}>
-                {p.online ? "Online" : "Offline — tap to reconnect"}
+              <button className={"net-toggle " + (p.online ? "online" : "offline")} style={{ margin: "0 0 8px", width: "100%", padding: "10px 0" }} onClick={p.onToggleOnline} title={p.online ? "Tap to force offline mode" : "Tap to go back online — will auto-sync"}>
+                {p.online ? "Online — tap for offline mode" : "Offline mode — tap to reconnect"}
               </button>
               {menuItems.map(([t, label, ic]) => (
                 <button key={t} className={"nav-item" + (tab === t ? " active" : "")} style={{ borderRadius: 999 }} onClick={() => go(t)}>
@@ -366,6 +367,15 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
     setPayFor(null); setPayAmt(""); shared.onSync();
   };
 
+  const exportStatement = () => {
+    if (tab === "outstanding") {
+      downloadExcel("ledger-outstanding", ["Customer", "Balance due"], outstandingRows.map((c) => [c.name, c.balance_due]));
+    } else {
+      const rows = paidNames.map((n) => [n, sum(billsFor(n).filter((b) => b.status === "paid" && !b.void_at), "amount")]);
+      downloadExcel("ledger-paid", ["Customer", "Total paid"], rows);
+    }
+  };
+
   return (
     <>
       <div className="card" style={{ padding: 20, textAlign: "center", marginBottom: 14 }}>
@@ -379,6 +389,8 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
         <button className={tab === "outstanding" ? "active" : ""} onClick={() => setTab("outstanding")}>Outstanding</button>
         <button className={tab === "paid" ? "active" : ""} onClick={() => setTab("paid")}>Paid</button>
       </div>
+
+      <button className="edit-btn" style={{ marginBottom: 12 }} onClick={exportStatement}>Export statement</button>
 
       <div className="field" style={{ position: "relative", marginBottom: 12 }}>
         <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={16} /></span>
@@ -1003,6 +1015,9 @@ function UnpaidBills({ branchId, shared }: { branchId: string; shared: SharedPro
     return settleBills.map((b) => { const applied = Math.min(left, b.due_amount); left -= applied; return { b, applied }; });
   }, [settleAmt, settleFor]);
 
+  const exportStatement = () => downloadExcel("unpaid-bills", ["Customer", "Bill", "Date", "Amount", "Paid", "Due", "Due date"],
+    bills.map((b) => [b.customer_name, b.bill_no || "Udhaar", dateStr(b.created_at), b.amount, b.paid, b.due_amount, b.due_date ? dateStr(b.due_date) : ""]));
+
   return (
     <>
       <div className="bento" style={{ marginBottom: 14 }}>
@@ -1015,6 +1030,8 @@ function UnpaidBills({ branchId, shared }: { branchId: string; shared: SharedPro
           <div style={{ fontSize: 20, fontWeight: 800 }}>{bills.length}</div>
         </div>
       </div>
+
+      <button className="edit-btn" style={{ marginBottom: 12 }} onClick={exportStatement}>Export statement</button>
 
       {groups.length ? groups.map((g) => {
         const isOpen = expanded.has(g.cust);

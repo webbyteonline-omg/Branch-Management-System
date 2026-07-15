@@ -10,6 +10,13 @@ export function Login() {
   const [showForgot, setShowForgot] = useState(false);
   const [fails, setFails] = useState(0);
   const [lockUntil, setLockUntil] = useState(0);
+  const [resetSent, setResetSent] = useState(false);
+
+  const sendResetEmail = async () => {
+    if (!userId.includes("@")) return;
+    const { error } = await supabase.auth.resetPasswordForEmail(userId.trim());
+    if (!error) setResetSent(true);
+  };
 
   const submit = async () => {
     if (Date.now() < lockUntil) return;
@@ -52,7 +59,15 @@ export function Login() {
         {showForgot && (
           <div className="hint" style={{ textAlign: "left" }}>
             After signing in, anyone can change their own password from the account menu (top-right) — it updates instantly.<br /><br />
-            Locked out? Ask the <b>owner</b> to reset it — the owner can set a new password for any staff from <b>Settings → Staff passwords</b> (or the Supabase dashboard). It takes effect immediately.
+            Locked out? Ask the <b>owner</b> to reset it — the owner can set a new password for any account from <b>Settings → Manage Accounts</b>. It takes effect immediately.
+            {userId.includes("@") && (
+              <>
+                <br /><br />
+                Your ID looks like a real email — {resetSent
+                  ? <>a password reset link has been sent to <b>{userId.trim()}</b>. Check your inbox.</>
+                  : <>you can also <button type="button" className="forgot-link" style={{ display: "inline", margin: 0, padding: 0, fontSize: 13 }} onClick={sendResetEmail}>send yourself a reset link</button> right now.</>}
+              </>
+            )}
           </div>
         )}
       </div>

@@ -8,6 +8,16 @@ import type { Branch, Product } from "../lib/types";
 
 const branchOpts = (branches: Branch[]) => branches.filter((b) => b.id !== "ho");
 
+/** When the owner already has a single branch in scope (picked a branch on the
+ *  landing screen), there's nothing to choose — show a fixed label instead of
+ *  a one-option dropdown. Only "All Branches" scope needs the real picker. */
+function BranchField({ brs, branchId, onChange }: { brs: Branch[]; branchId: string; onChange: (id: string) => void }) {
+  if (brs.length <= 1) {
+    return <div className="field"><label>Branch</label><div style={{ padding: "12px 13px", borderRadius: 10, background: "var(--surface-2)", fontWeight: 600, fontSize: 14 }}>{brs[0]?.name || "—"}</div></div>;
+  }
+  return <div className="field"><label>Branch</label><select value={branchId} onChange={(e) => onChange(e.target.value)}>{brs.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>;
+}
+
 export function AddCustomerModal({ branches, onClose, onSync }: { branches: Branch[]; onClose: () => void; onSync: () => void }) {
   const brs = branchOpts(branches);
   const [branchId, setBranchId] = useState(brs[0]?.id || "");
@@ -20,7 +30,7 @@ export function AddCustomerModal({ branches, onClose, onSync }: { branches: Bran
   return (
     <Modal title="Add customer" onClose={onClose}>
       <div className="form-grid">
-        <div className="field"><label>Branch</label><select value={branchId} onChange={(e) => setBranchId(e.target.value)}>{brs.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
+        <BranchField brs={brs} branchId={branchId} onChange={setBranchId} />
         <div className="field"><label>Name</label><input value={name} onChange={(e) => setName(e.target.value)} placeholder="Customer name" /></div>
         <div className="field"><label>Phone (optional)</label><input value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
         <div className="btn-row"><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn" onClick={save}>Add</button></div>
@@ -42,7 +52,7 @@ export function AddExpenseModal({ branches, userId, onClose, onSync }: { branche
     <Modal title="Add expense" onClose={onClose}>
       <div className="form-grid">
         <div className="qty-row">
-          <div className="field"><label>Branch</label><select value={branchId} onChange={(e) => setBranchId(e.target.value)}>{brs.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
+          <BranchField brs={brs} branchId={branchId} onChange={setBranchId} />
           <div className="field"><label>Category</label><select value={cat} onChange={(e) => setCat(e.target.value)}>{cats.map((c) => <option key={c}>{c}</option>)}</select></div>
         </div>
         <div className="field"><label>Note (optional)</label><input value={note} onChange={(e) => setNote(e.target.value)} /></div>
@@ -75,7 +85,7 @@ export function AddPurchaseModal({ branches, products, userId, onClose, onSync }
     <Modal title="Add purchase" onClose={onClose}>
       <div className="form-grid">
         <div className="qty-row">
-          <div className="field"><label>Branch</label><select value={branchId} onChange={(e) => { setBranchId(e.target.value); setPid(""); }}>{brs.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</select></div>
+          <BranchField brs={brs} branchId={branchId} onChange={(id) => { setBranchId(id); setPid(""); }} />
           <div className="field"><label>Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
         </div>
         <div className="field"><label>Supplier / Company</label><input value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Supplier name" /></div>
