@@ -197,7 +197,10 @@ export function Owner(p: SharedProps) {
             <button className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync status">
               <span className="dot" /><span className="hide-mobile">{p.syncError ? "Sync error" : pending > 0 ? `${pending} to sync` : "All synced"}</span>
             </button>
-            <button className={"net-toggle " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline} title={p.online ? "Tap to force offline mode (saves only on this device)" : "Tap to go back online — will auto-sync"}><span className="hide-mobile">{p.online ? "Online" : "Offline mode"}</span><span className="show-mobile-inline"><Icon name={p.online ? "cloud" : "warning"} size={15} /></span></button>
+            <button className={"net-toggle-switch " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline} title={p.online ? "Tap to switch to offline mode (saves only on this device)" : "Tap to go back online — will auto-sync"}>
+              <span className="nts-track"><span className="nts-knob"><Icon name={p.online ? "cloud" : "warning"} size={12} /></span></span>
+              <span className="hide-mobile">{p.online ? "Online" : "Offline mode"}</span>
+            </button>
             <button className="btn" style={{ width: "auto", padding: "9px 14px", borderRadius: 999, flexShrink: 0 }} onClick={p.onLogout}>Logout</button>
           </div>
         </div>

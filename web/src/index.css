@@ -196,6 +196,22 @@ input, select { font-family: inherit; font-size: 15px; }
 .net-toggle.online { color: var(--green); border-color: #c9f0e0; background: var(--green-soft); }
 .net-toggle.offline { color: var(--red); border-color: #f6d4d4; background: var(--red-soft); }
 
+/* Online/Offline is a TOGGLE (tap to force offline mode), not just a status
+ * readout like the sync-pill next to it — give it an actual switch shape
+ * (track + sliding knob) so it visually reads as interactive, not a label. */
+.net-toggle-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
+  padding: 5px 11px 5px 6px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
+.net-toggle-switch.online { color: var(--green); border-color: #c9f0e0; background: var(--green-soft); }
+.net-toggle-switch.offline { color: var(--red); border-color: #f6d4d4; background: var(--red-soft); }
+.nts-track { width: 30px; height: 18px; border-radius: 999px; background: rgba(0,0,0,.12); position: relative; flex-shrink: 0; transition: background .15s; }
+.net-toggle-switch.online .nts-track { background: var(--green); }
+.net-toggle-switch.offline .nts-track { background: var(--red); }
+.nts-knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff;
+  display: grid; place-items: center; color: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
+.net-toggle-switch.online .nts-knob { transform: translateX(12px); color: var(--green); }
+.net-toggle-switch.offline .nts-knob { transform: translateX(0); color: var(--red); }
+@media (max-width: 640px) { .net-toggle-switch { padding: 5px 8px 5px 5px; } }
+
 /* content */
 .content { padding: 24px 26px 40px; max-width: 1240px; }
 .page-title { font-size: 26px; font-weight: 700; letter-spacing: -.5px; margin: 4px 0 4px; }
