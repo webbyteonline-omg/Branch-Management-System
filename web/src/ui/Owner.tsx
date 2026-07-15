@@ -241,7 +241,7 @@ export function Owner(p: SharedProps) {
           {view === "ledger" && <LedgerPage custAll={sCustAll} bmap={bmap} onSync={p.onSync} isMobile={isMobile} branches={sBranches} scope={scope} scopeLabel={scopeLabel} />}
           {view === "purchases" && <PurchasesPage rPurch={sRPurch} purchAll={sPurchAll} bmap={bmap} label={rangeText} branches={sBranches} products={sProducts} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} scope={scope} scopeLabel={scopeLabel} />}
           {view === "inventory" && <InventoryPage products={sProducts} sales={sSales} purchases={sPurchases} branches={sBranches} userId={p.profile.id} onSync={p.onSync} isMobile={isMobile} />}
-          {view === "products" && <ProductsPage prodAll={sProdAll} online={p.online} branches={sBranches} onSync={p.onSync} scope={scope} scopeLabel={scopeLabel} />}
+          {view === "products" && <ProductsPage prodAll={sProdAll} online={p.online} branches={sBranches} onSync={p.onSync} scope={scope} scopeLabel={scopeLabel} isMobile={isMobile} />}
           {view === "saleshistory" && <SalesHistoryPage sales={sRSales} bmap={bmap} branches={sBranches} staffMap={staffMap} isMobile={isMobile} scope={scope} scopeLabel={scopeLabel} />}
           {view === "daybook" && <DaybookPage rSales={sRSalesT} rPurch={sRPurch} rExp={sRExp} bmap={bmap} range={rangeText} branches={sBranches} userId={p.profile.id} onSync={p.onSync} scope={scope} scopeLabel={scopeLabel} />}
           {view === "reports" && <ReportsPage rSales={sRSalesT} rPurch={sRPurch} range={range} isCustom={isCustom} cFrom={cFrom} cTo={cTo} setRange={setRange} setCFrom={setCFrom} setCTo={setCTo} />}
@@ -644,7 +644,7 @@ function LedgerPage({ custAll, bmap, onSync, isMobile, branches, scopeLabel }: a
 
   return (
     <><h1 className="page-title">Ledger</h1><p className="page-sub">{isSplit ? "Customer balances (udhaar) across both branches." : `Customer balances (udhaar) for ${scopeLabel || "this branch"}.`}</p>
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+      <div className="kpi-grid-3">
         <Kpi label="Customers" value={String(rows.length)} delta={{ cls: "up", txt: isSplit ? "all branches" : scopeLabel }} icon="customers" color="var(--accent)" bg="var(--accent-soft)" />
         <Kpi label="With dues" value={String(withDue)} delta={{ cls: withDue > 0 ? "down" : "up", txt: "need follow-up" }} icon="bill" color="var(--amber)" bg="var(--amber-soft)" />
         <Kpi label="Total outstanding" value={money(totalDue)} delta={{ cls: totalDue > 0 ? "down" : "up", txt: "across ledger" }} icon="book" color="var(--red)" bg="var(--red-soft)" />
@@ -676,7 +676,7 @@ function LedgerPage({ custAll, bmap, onSync, isMobile, branches, scopeLabel }: a
 }
 
 /* ---------- products (catalog & pricing) ---------- */
-function ProductsPage({ prodAll, online, branches, onSync, scope, scopeLabel }: any) {
+function ProductsPage({ prodAll, online, branches, onSync, scope, scopeLabel, isMobile }: any) {
   const [edit, setEdit] = useState<Partial<Product> | null>(null);
   const [showDeleted, setShowDeleted] = useState(false);
   const [q, setQ] = useState("");
@@ -691,8 +691,6 @@ function ProductsPage({ prodAll, online, branches, onSync, scope, scopeLabel }: 
   };
   const delProd = async (pr: Product) => { if (confirmDelete("product")) { await softDelete("products", pr.id, "Main Office"); toast("Deleted"); onSync(); } };
   const restoreProd = async (pr: Product) => { await restoreRow("products", pr.id); toast("Restored"); onSync(); };
-  const exportCsv = () => downloadExcel("products", ["Name", "Branch", "Unit", "Cost", "Sale price", "Pieces/box", "Box price", "Low stock at"],
-    rows.map((pr) => [pr.name, pr.branch_id ? (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : "All", pr.unit, pr.cost_price, pr.sale_price, pr.pieces_per_box || "", pr.box_price || "", pr.low_stock_at ?? 5]));
   const realBranches = branches.filter((b: any) => b.id !== "ho");
   const isSplit = scope === "all" && realBranches.length > 1;
 
@@ -720,28 +718,56 @@ function ProductsPage({ prodAll, online, branches, onSync, scope, scopeLabel }: 
     </table></div>
   );
 
+  // Phones get cards, not the 8-column table — the table forces horizontal
+  // scroll no matter how much CSS wrapping is applied to the header row.
+  const prodCards = (list: Product[]) => (
+    list.length ? list.map((pr: Product) => (
+      <div className="card card-pad" key={pr.id} style={{ marginBottom: 10 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div className="main" style={{ fontWeight: 700 }}>{pr.name}</div>
+            <div className="sub">{pr.unit}{pr.branch_id ? " · " + (branches.find((b: any) => b.id === pr.branch_id)?.name.replace(" Branch", "") || pr.branch_id) : " · All branches"}</div>
+            {pr.edited_note && <div style={{ fontSize: 10.5, color: "var(--faint)", marginTop: 2 }}>{pr.edited_note}</div>}
+          </div>
+          {showDeleted
+            ? <button className="pay-btn" onClick={() => restoreProd(pr)}>Restore</button>
+            : <div style={{ display: "flex", gap: 6, flexShrink: 0 }}><button className="edit-btn" onClick={() => setEdit({ ...pr })}>Edit</button><button className="del-btn" onClick={() => delProd(pr)}>✕</button></div>}
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: pr.pieces_per_box ? "1fr 1fr 1fr" : "1fr 1fr", gap: 8, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
+          <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Cost</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{money(pr.cost_price)}</div></div>
+          <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Piece price</div><div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--green)" }}>{money(pr.sale_price)}</div></div>
+          {pr.pieces_per_box ? <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Box price</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{pr.box_price ? money(pr.box_price) : "—"}</div></div> : null}
+        </div>
+      </div>
+    )) : <div className="card card-pad"><div className="empty">Nothing here.</div></div>
+  );
+
+  const listView = (list: Product[]) => isMobile ? prodCards(list) : prodTable(list);
+
   return (
     <><h1 className="page-title">Products</h1><p className="page-sub">{isSplit ? "Catalog, pricing & branch assignment." : `Catalog & pricing for ${scopeLabel || "this branch"}.`}</p>
       {!isSplit && (
-        <div className="card">
-          <div className="card-head"><h3>{rows.length} {showDeleted ? "deleted" : "product" + (rows.length === 1 ? "" : "s")}</h3>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <input className="search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
-              <button className="edit-btn" onClick={exportCsv}>Export Excel</button>
-              <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
-              {!showDeleted && <button className="add-btn" onClick={() => setEdit({ ...blank })}>+ Add product</button>}
+        <>
+          <div className={isMobile ? "" : "card"}>
+            <div className={isMobile ? "" : "card-head"} style={isMobile ? { marginBottom: 12 } : undefined}>
+              {!isMobile && <h3>{rows.length} {showDeleted ? "deleted" : "product" + (rows.length === 1 ? "" : "s")}</h3>}
+              <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <input className="search" style={isMobile ? { flex: 1 } : undefined} placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
+                <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
+                {!showDeleted && <button className="add-btn" onClick={() => setEdit({ ...blank })}>+ Add product</button>}
+              </div>
             </div>
+            {isMobile && <div className="sub" style={{ margin: "8px 0 12px" }}>{rows.length} {showDeleted ? "deleted" : "product" + (rows.length === 1 ? "" : "s")}</div>}
+            {listView(rows)}
           </div>
-          {prodTable(rows)}
-        </div>
+        </>
       )}
       {isSplit && (
         <>
           <div className="card card-pad" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
             <span style={{ fontWeight: 700 }}>{rows.length} {showDeleted ? "deleted" : "product" + (rows.length === 1 ? "" : "s")} · combined catalog value {money(catalogValue(rows))}</span>
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <input className="search" placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
-              <button className="edit-btn" onClick={exportCsv}>Export Excel</button>
+            <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+              <input className="search" style={isMobile ? { flex: 1 } : undefined} placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
               <button className="edit-btn" onClick={() => setShowDeleted((v) => !v)}>{showDeleted ? "← Active" : "Deleted"}</button>
               {!showDeleted && <button className="add-btn" onClick={() => setEdit({ ...blank })}>+ Add product</button>}
             </div>
@@ -749,24 +775,28 @@ function ProductsPage({ prodAll, online, branches, onSync, scope, scopeLabel }: 
           {realBranches.map((b: any) => {
             const list = rows.filter((pr) => pr.branch_id === b.id);
             return (
-              <div className="card" key={b.id} style={{ marginTop: 14 }}>
-                <div className="card-head">
-                  <h3>{shortBranch(b.name)} Branch — {list.length} product{list.length === 1 ? "" : "s"}</h3>
-                  <b>{money(catalogValue(list))}</b>
+              <div key={b.id} style={{ marginTop: 14 }}>
+                <div className={isMobile ? "sub" : "card-head"} style={isMobile ? { fontWeight: 700, margin: "0 0 8px" } : { background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "12px 12px 0 0", padding: "14px 16px" }}>
+                  <h3 style={isMobile ? undefined : { margin: 0 }}>{shortBranch(b.name)} Branch — {list.length} product{list.length === 1 ? "" : "s"}</h3>
+                  {!isMobile && <b>{money(catalogValue(list))}</b>}
                 </div>
-                {prodTable(list)}
+                <div className={isMobile ? "" : "card"} style={isMobile ? undefined : { borderTop: "none", borderRadius: "0 0 12px 12px" }}>
+                  {listView(list)}
+                </div>
               </div>
             );
           })}
           {(() => {
             const shared = rows.filter((pr) => !pr.branch_id);
             return (
-              <div className="card" style={{ marginTop: 14 }}>
-                <div className="card-head">
-                  <h3>Shared (all branches) — {shared.length} product{shared.length === 1 ? "" : "s"}</h3>
-                  <b>{money(catalogValue(shared))}</b>
+              <div style={{ marginTop: 14 }}>
+                <div className={isMobile ? "sub" : "card-head"} style={isMobile ? { fontWeight: 700, margin: "0 0 8px" } : { background: "var(--surface)", border: "1px solid var(--line)", borderRadius: "12px 12px 0 0", padding: "14px 16px" }}>
+                  <h3 style={isMobile ? undefined : { margin: 0 }}>Shared (all branches) — {shared.length} product{shared.length === 1 ? "" : "s"}</h3>
+                  {!isMobile && <b>{money(catalogValue(shared))}</b>}
                 </div>
-                {prodTable(shared)}
+                <div className={isMobile ? "" : "card"} style={isMobile ? undefined : { borderTop: "none", borderRadius: "0 0 12px 12px" }}>
+                  {listView(shared)}
+                </div>
               </div>
             );
           })()}
@@ -899,7 +929,7 @@ function PurchasesPage({ rPurch, purchAll, bmap, label, branches, products, user
 
   return (
     <><h1 className="page-title">Purchases</h1><p className="page-sub">{isSplit ? "What each branch bought, from whom, when" : `What ${scopeLabel || "this branch"} bought, from whom, when`} · {showDeleted ? "deleted items" : String(label).toLowerCase()}.</p>
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+      <div className="kpi-grid-3">
         <Kpi label="Total purchases" value={money(total)} delta={{ cls: "down", txt: "outflow" }} icon="cart" color="var(--red)" bg="var(--red-soft)" />
         <Kpi label="On credit (owed)" value={money(credit)} delta={{ cls: "down", txt: "to suppliers" }} icon="wallet" color="var(--amber)" bg="var(--amber-soft)" />
         <Kpi label="Records" value={String(rows.length)} delta={{ cls: "up", txt: "purchase entries" }} icon="truck" color="var(--accent)" bg="var(--accent-soft)" />
@@ -1039,7 +1069,7 @@ function InventoryPage({ products, sales, purchases, branches, userId, onSync, i
 
   return (
     <><h1 className="page-title">Inventory</h1><p className="page-sub">Live stock per branch (purchases in − sales out). Adjust for opening stock or wastage. Tap a card below to filter.</p>
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+      <div className="kpi-grid">
         <Kpi label="Total SKU Items" value={String(products.length)} delta={{ cls: "up", txt: "across catalog" }} icon="boxIcon" color="var(--accent)" bg="var(--accent-soft)" onClick={() => setStatusFilter("")} active={statusFilter === ""} />
         <Kpi label="In Stock" value={String(products.filter((pr: any) => statusOf(pr) === "in").length)} delta={{ cls: "up", txt: "healthy" }} icon="check" color="var(--green)" bg="var(--green-soft)" onClick={() => setStatusFilter(statusFilter === "in" ? "" : "in")} active={statusFilter === "in"} />
         <Kpi label="Low Stock" value={String(products.filter((pr: any) => statusOf(pr) === "low").length)} delta={{ cls: "down", txt: "items" }} icon="warning" color="var(--amber)" bg="var(--amber-soft)" onClick={() => setStatusFilter(statusFilter === "low" ? "" : "low")} active={statusFilter === "low"} />
@@ -1211,7 +1241,7 @@ function SalesHistoryPage({ sales, bmap, branches, staffMap, isMobile, scope, sc
 
   return (
     <><h1 className="page-title">Sales / Bill History</h1><p className="page-sub">{isSplit ? "Every bill across both branches." : `Every bill for ${scopeLabel || "this branch"}.`}</p>
-      <div className="kpi-grid" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+      <div className="kpi-grid-3">
         <Kpi label="Total Revenue" value={money(bills.reduce((a, g) => a + g.total, 0))} delta={{ cls: "up", txt: "this view" }} icon="sales" color="var(--accent)" bg="var(--accent-soft)" />
         <Kpi label="Total Bills" value={String(bills.length)} delta={{ cls: "up", txt: "records" }} icon="bill" color="var(--green)" bg="var(--green-soft)" />
         <Kpi label="Branches Covered" value={String(new Set(bills.map((g) => g.br)).size)} delta={{ cls: "up", txt: "active" }} icon="branch" color="var(--amber)" bg="var(--amber-soft)" />
@@ -1268,7 +1298,7 @@ function DaybookPage({ rSales, rPurch, rExp, bmap, range, branches, userId, onSy
 
   return (
     <><h1 className="page-title">Day Book</h1><p className="page-sub">{isSplit ? "Combined money in & out" : `Money in & out for ${scopeLabel || "this branch"}`} · {rangeLabel(range).toLowerCase()}.</p>
-      <div className="stats" style={{ gridTemplateColumns: "repeat(4,1fr)" }}>
+      <div className="stats">
         <div className="stat"><div className="label">Money in</div><div className="value" style={{ color: "var(--green)" }}>{money(inT)}</div></div>
         <div className="stat"><div className="label">Purchases</div><div className="value">{money(outP)}</div></div>
         <div className="stat"><div className="label">Expenses</div><div className="value" style={{ color: "var(--red)" }}>{money(outE)}</div></div>

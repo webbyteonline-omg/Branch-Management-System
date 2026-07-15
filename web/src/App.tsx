@@ -8,6 +8,7 @@ import { Owner } from "./ui/Owner";
 import { Staff } from "./ui/Staff";
 import { ToastHost, toast } from "./ui/Toast";
 import { ErrorBoundary } from "./ui/ErrorBoundary";
+import { SplashScreen } from "./ui/Splash";
 
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
@@ -115,7 +116,11 @@ export function App() {
 
   const logout = async () => { await supabase.auth.signOut(); };
 
-  if (session === undefined) return <div className="empty" style={{ marginTop: 80 }}>Loading…</div>;
+  // Still figuring out auth state, or we have a session but the matching
+  // profile row hasn't loaded yet — show the splash, never the login form.
+  // Without this, a logged-in user sees a 1-2s flash of "Login" every time
+  // the app opens, because `profile` resolves slightly after `session`.
+  if (session === undefined || (session && !profile)) return <SplashScreen />;
   if (!session || !profile)
     return (<><Login /><ToastHost /></>);
 
