@@ -67,11 +67,16 @@ export interface Purchase {
   product_id?: string | null;
   product_name: string;
   supplier?: string;
-  qty: number;
-  cost: number;
+  qty: number;    // total pieces (box_qty × pieces_per_box + pcs_qty) — used for stock math
+  cost: number;   // effective per-piece cost = total ÷ qty (blended, mirrors Sale.price)
   total: number;
+  box_qty?: number | null;   // informational: how many boxes/cartoons were in this line
+  pcs_qty?: number | null;   // informational: how many loose pieces were in this line
+  box_cost?: number | null;  // informational: the box/cartoon cost used, if any
   invoice_no?: string | null;
-  payment_mode?: "cash" | "credit";
+  payment_mode?: "cash" | "upi" | "both" | "credit";
+  cash_amount?: number | null; // only used when payment_mode === "both"
+  upi_amount?: number | null;  // only used when payment_mode === "both"
   note?: string | null;
   created_at: string;
   deleted_at?: string | null;
@@ -84,6 +89,7 @@ export interface Customer {
   branch_id: string;
   name: string;
   phone?: string | null;
+  active?: boolean;
   balance_due: number;
   deleted_at?: string | null;
   edited_note?: string | null;
@@ -105,6 +111,21 @@ export interface Bill {
   void_at?: string | null;       // voided: stays visible (crossed out, VOID label), excluded from all totals
   void_snapshot?: { amount: number; paid: number; due_amount: number; status: "unpaid" | "paid" } | null;
   edited_note?: string | null;
+  _synced?: 0 | 1;
+}
+
+export interface Payment {
+  id: string;
+  branch_id: string;
+  bill_id?: string | null;
+  customer_name: string;
+  amount: number;
+  cash_amount?: number | null;
+  upi_amount?: number | null;
+  mode: "cash" | "upi" | "both";
+  created_by?: string | null;
+  created_at: string;
+  deleted_at?: string | null;
   _synced?: 0 | 1;
 }
 

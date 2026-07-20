@@ -1,21 +1,21 @@
 :root {
-  /* ProTrade POS / Executive Command palette (unified across Staff + Owner) */
-  --bg: #f9f9ff;
+  /* SST-style Material 3 palette (unified across Staff + Owner) */
+  --bg: #f8f9ff;
   --surface: #ffffff;
-  --surface-2: #f0f3ff;
-  --surface-3: #e7eefe;
-  --surface-4: #e2e8f8;
-  --line: #dce2f3;
-  --line-2: #eef1f6;
-  --text: #151c27;
-  --muted: #464555;
-  --faint: #777587;
-  --accent: #3525cd;
-  --accent-soft: #e2dfff;
-  --accent-d: #2a1ba3;
-  --accent-bright: #4f46e5;
-  --green: #006c49;
-  --green-soft: #e3fbf1;
+  --surface-2: #eff4ff;
+  --surface-3: #e5eeff;
+  --surface-4: #dce9ff;
+  --line: #c4c5d7;
+  --line-2: #e5eeff;
+  --text: #0b1c30;
+  --muted: #434655;
+  --faint: #747686;
+  --accent: #0037b0;
+  --accent-soft: #dce1ff;
+  --accent-d: #002685;
+  --accent-bright: #1d4ed8;
+  --green: #006e2d;
+  --green-soft: #d9f9e0;
   --red: #ba1a1a;
   --red-soft: #ffdad6;
   --amber: #885500;
@@ -23,8 +23,8 @@
   --radius: 12px;
   --radius-sm: 8px;
   --radius-lg: 24px;
-  --shadow: 0 1px 2px rgba(16,24,40,.04), 0 1px 3px rgba(16,24,40,.06);
-  --shadow-lg: 0 4px 6px -1px rgba(0,0,0,.1), 0 2px 4px -1px rgba(0,0,0,.06);
+  --shadow: 0px 2px 8px rgba(0,0,0,.05);
+  --shadow-lg: 0px 2px 8px rgba(0,0,0,.05);
   --shadow-xl: 0 20px 25px -5px rgba(0,0,0,.1), 0 8px 10px -6px rgba(0,0,0,.1);
   --sidebar: 280px;
   --tap-min: 48px;
@@ -32,7 +32,7 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
-  font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-family: "Work Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   font-size: 15px; -webkit-font-smoothing: antialiased; overscroll-behavior-y: none; }
 /* Rapid/repeated taps on buttons and other tappable UI must never select
  * their text — this is a PWA (no native button chrome), so without this the
@@ -193,25 +193,13 @@ input, select { font-family: inherit; font-size: 15px; }
 .sync-pill.pending { background: var(--amber-soft); color: var(--amber); border-color: #fde9c8; }
 .sync-pill.ok { background: var(--green-soft); color: var(--green); border-color: #c9f0e0; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+/* Used only for the rare "no network right now" notice inside the Staff
+ * hamburger menu — this is informational, not a toggle, since there's no
+ * manual offline mode anymore (everything just saves locally and syncs
+ * automatically, always). */
 .net-toggle { font-size: 12px; padding: 7px 11px; border-radius: 999px; font-weight: 600; border: 1px solid var(--line); background: var(--surface); }
 .net-toggle.online { color: var(--green); border-color: #c9f0e0; background: var(--green-soft); }
 .net-toggle.offline { color: var(--red); border-color: #f6d4d4; background: var(--red-soft); }
-
-/* Online/Offline is a TOGGLE (tap to force offline mode), not just a status
- * readout like the sync-pill next to it — give it an actual switch shape
- * (track + sliding knob) so it visually reads as interactive, not a label. */
-.net-toggle-switch { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
-  padding: 5px 11px 5px 6px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); }
-.net-toggle-switch.online { color: var(--green); border-color: #c9f0e0; background: var(--green-soft); }
-.net-toggle-switch.offline { color: var(--red); border-color: #f6d4d4; background: var(--red-soft); }
-.nts-track { width: 30px; height: 18px; border-radius: 999px; background: rgba(0,0,0,.12); position: relative; flex-shrink: 0; transition: background .15s; }
-.net-toggle-switch.online .nts-track { background: var(--green); }
-.net-toggle-switch.offline .nts-track { background: var(--red); }
-.nts-knob { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff;
-  display: grid; place-items: center; color: inherit; box-shadow: 0 1px 2px rgba(0,0,0,.25); transition: transform .15s; }
-.net-toggle-switch.online .nts-knob { transform: translateX(12px); color: var(--green); }
-.net-toggle-switch.offline .nts-knob { transform: translateX(0); color: var(--red); }
-@media (max-width: 640px) { .net-toggle-switch { padding: 5px 8px 5px 5px; } }
 
 /* content */
 .content { padding: 24px 26px 40px; max-width: 1240px; }

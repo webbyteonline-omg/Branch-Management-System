@@ -11,7 +11,7 @@ const clean = <T extends { _synced?: number }>(row: T) => {
 /** Pull server data into the local store. RLS means a staff phone only
  *  ever receives its own branch's rows — enforced by the database. */
 export async function pullAll(profile: Profile): Promise<void> {
-  const [branches, products, sales, purchases, customers, bills, expenses, settings] = await Promise.all([
+  const [branches, products, sales, purchases, customers, bills, expenses, settings, payments] = await Promise.all([
     supabase.from("branches").select("*"),
     supabase.from("products").select("*"),
     supabase.from("sales").select("*").order("created_at", { ascending: false }).limit(2000),
@@ -20,6 +20,7 @@ export async function pullAll(profile: Profile): Promise<void> {
     supabase.from("bills").select("*").order("created_at", { ascending: false }),
     supabase.from("expenses").select("*").order("created_at", { ascending: false }).limit(2000),
     supabase.from("app_settings").select("*").eq("id", "main").maybeSingle(),
+    supabase.from("payments").select("*").order("created_at", { ascending: false }).limit(2000),
   ]);
 
   if (branches.data) await localdb.branches.bulkPut(branches.data as any);
@@ -46,7 +47,26 @@ export async function pullAll(profile: Profile): Promise<void> {
     customers.data ? mergeKeep(localdb.customers, customers.data) : null,
     bills.data ? mergeKeep(localdb.bills, bills.data) : null,
     expenses.data ? mergeKeep(localdb.expenses, expenses.data) : null,
+    payments.data ? mergeKeep(localdb.payments, payments.data) : null,
   ]);
+}
+
+/** The local cache only keeps the most recent ~2000 rows per table (fast,
+ *  fine for day-to-day screens). Exports/statements need to be complete even
+ *  for older custom date ranges, so they fetch straight from the server for
+ *  the exact window requested instead of relying on the capped local copy. */
+export async function fetchRangeFresh<T = any>(
+  table: "sales" | "purchases" | "expenses",
+  from: number, to: number, branchIds?: string[] | null,
+): Promise<T[]> {
+  let q = supabase.from(table).select("*")
+    .gte("created_at", new Date(from).toISOString())
+    .lte("created_at", new Date(to).toISOString())
+    .order("created_at", { ascending: false });
+  if (branchIds && branchIds.length) q = q.in("branch_id", branchIds);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data as T[]) ?? [];
 }
 
 export class SyncError extends Error {
@@ -76,6 +96,7 @@ export async function pushPending(): Promise<{ pushed: number; errors: SyncError
     { name: "customers", table: localdb.customers },
     { name: "bills", table: localdb.bills },
     { name: "expenses", table: localdb.expenses },
+    { name: "payments", table: localdb.payments },
   ];
 
   for (const { name, table } of tables) {
@@ -93,7 +114,7 @@ export async function pushPending(): Promise<{ pushed: number; errors: SyncError
 
   return { pushed, errors };
 }
-type SyncTableName = "sales" | "purchases" | "customers" | "bills" | "expenses" | "products";
+type SyncTableName = "sales" | "purchases" | "customers" | "bills" | "expenses" | "products" | "payments";
 
 /** Live updates so the owner's dashboard reflects branch activity instantly.
  *  Every insert/update/delete from any device is written into the local store,
@@ -104,6 +125,7 @@ export function subscribeRealtime(onChange: () => void) {
   const tables: Record<string, any> = {
     sales: localdb.sales, purchases: localdb.purchases, bills: localdb.bills,
     expenses: localdb.expenses, customers: localdb.customers, products: localdb.products,
+    payments: localdb.payments,
   };
   let ch: ReturnType<typeof supabase.channel> | null = null;
   let stopped = false;

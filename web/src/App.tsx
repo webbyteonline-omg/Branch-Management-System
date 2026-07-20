@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
+import { ensureDbReady } from "./lib/db";
 import { pullAll, pushPending, subscribeRealtime } from "./lib/sync";
 import type { Profile } from "./lib/types";
 import { Login } from "./ui/Login";
@@ -13,12 +14,36 @@ import { SplashScreen } from "./ui/Splash";
 export function App() {
   const [session, setSession] = useState<Session | null | undefined>(undefined);
   const [profile, setProfile] = useState<Profile | null>(null);
-  const [manualOffline, setManualOffline] = useState(false);
   const [navOnline, setNavOnline] = useState(navigator.onLine);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
-  const online = navOnline && !manualOffline;
+  const [dbError, setDbError] = useState<string | null>(null);
+  // No manual offline toggle — every write already saves to the device first
+  // and syncs automatically the instant real network is available. Staff and
+  // owner never have to think about "online vs offline" at all.
+  const online = navOnline;
+
+  // ---- local database must actually open before anything can safely write
+  // to it (full storage / private browsing / a corrupted DB can all make
+  // this fail). If it can't, block with a clear message instead of letting
+  // every save silently do nothing later. ----
+  useEffect(() => {
+    ensureDbReady().then((r) => { if (!r.ok) setDbError(r.message); });
+  }, []);
+
+  // ---- catch anything that slips past a component's own try/catch (a
+  // React ErrorBoundary does NOT catch errors thrown inside event handlers
+  // or async functions — only render-time errors) so a bug in a save/delete
+  // handler never fails completely silently with no feedback at all. ----
+  useEffect(() => {
+    const onRejection = (e: PromiseRejectionEvent) => {
+      console.error("[unhandled]", e.reason);
+      toast("Something went wrong — please try that again.");
+    };
+    window.addEventListener("unhandledrejection", onRejection);
+    return () => window.removeEventListener("unhandledrejection", onRejection);
+  }, []);
 
   // ---- auth session ----
   useEffect(() => {
@@ -53,7 +78,7 @@ export function App() {
   // completely silent while data never reaches Head Office.
   const lastSyncErrorRef = useRef<string | null>(null);
   const sync = useCallback(async () => {
-    if (!profile || !navigator.onLine || manualOffline) return;
+    if (!profile || !navigator.onLine) return;
     setSyncing(true);
     try {
       const { pushed, errors } = await pushPending();
@@ -77,7 +102,7 @@ export function App() {
     } finally {
       setSyncing(false);
     }
-  }, [profile, manualOffline]);
+  }, [profile]);
 
   useEffect(() => { if (profile) sync(); }, [profile, sync]);
   useEffect(() => { if (online) sync(); }, [online, sync]);
@@ -94,9 +119,9 @@ export function App() {
   // socket died, with no visible delay for the user.
   useEffect(() => {
     if (!profile) return;
-    const id = setInterval(() => { if (navigator.onLine && !manualOffline) sync(); }, 20_000);
+    const id = setInterval(() => { if (navigator.onLine) sync(); }, 20_000);
     return () => clearInterval(id);
-  }, [profile, manualOffline, sync]);
+  }, [profile, sync]);
 
   // Also re-sync whenever the tab regains focus/visibility — covers the
   // common case of switching apps and coming back.
@@ -106,15 +131,19 @@ export function App() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [sync]);
 
-  const toggleOnline = () => {
-    setManualOffline((v) => {
-      const next = !v;
-      toast(next ? "Offline — entries save on device" : "Back online");
-      return next;
-    });
-  };
-
   const logout = async () => { await supabase.auth.signOut(); };
+
+  // Local storage genuinely failed to open — every save would silently do
+  // nothing from here on, so stop and say so clearly instead.
+  if (dbError) {
+    return (
+      <div className="empty" style={{ marginTop: 90, padding: 24, maxWidth: 420, marginLeft: "auto", marginRight: "auto" }}>
+        <div style={{ fontWeight: 700, fontSize: 16, color: "var(--red)", marginBottom: 8 }}>Couldn't open local storage</div>
+        <div style={{ fontSize: 13.5, color: "var(--muted)" }}>This usually means the device is out of storage space, or the browser is in a private/locked-down mode. Free up space or try a normal browser tab, then reload.</div>
+        <div style={{ marginTop: 18 }}><button className="btn" style={{ maxWidth: 200, margin: "0 auto" }} onClick={() => location.reload()}>Reload</button></div>
+      </div>
+    );
+  }
 
   // Still figuring out auth state, or we have a session but the matching
   // profile row hasn't loaded yet — show the splash, never the login form.
@@ -134,7 +163,7 @@ export function App() {
     );
   }
 
-  const shared = { profile, online, onToggleOnline: toggleOnline, onLogout: logout, onSync: sync, syncError, syncing, lastSyncedAt };
+  const shared = { profile, online, onLogout: logout, onSync: sync, syncError, syncing, lastSyncedAt };
   return (
     <ErrorBoundary>
       {profile.role === "owner" ? <Owner {...shared} /> : <Staff {...shared} />}

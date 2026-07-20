@@ -1,6 +1,6 @@
 import { localdb } from "./db";
 import { supabase } from "./supabase";
-import type { Bill, Customer, Product, Expense, Settings } from "./types";
+import type { Bill, Customer, Product, Expense, Settings, Payment } from "./types";
 
 const uuid = () => crypto.randomUUID();
 
@@ -196,6 +196,62 @@ export async function createPurchase(branchId: string, userId: string, inp: Purc
   });
 }
 
+export interface PurchaseCartItem {
+  product_id?: string; product_name: string; qty: number; cost: number;
+  // Box/piece split — same purpose as CartItem's boxQty/pcsQty/lineTotalOverride:
+  // qty stays the piece-equivalent total for stock math, lineTotalOverride is
+  // the true line amount (box_qty×box_cost + pcs_qty×cost) when it differs
+  // from qty×cost, and cost is then back-computed as a blended per-piece rate
+  // so qty×cost still equals the stored total.
+  boxQty?: number; pcsQty?: number; boxCost?: number; lineTotalOverride?: number;
+}
+
+/** Auto-generate a purchase invoice number when the user leaves it blank —
+ *  kept intentionally simple (client-side, timestamp-based) rather than a
+ *  server-side sequential counter like nextBillNo, since invoice numbers for
+ *  purchases are supplier-provided in real use; this is just a safe fallback
+ *  so invoice_no is never empty when grouping into PreviousPurchases. */
+export function nextPurchaseNo(): string {
+  return `PUR-${Date.now().toString(36).toUpperCase()}`;
+}
+
+/** Record a multi-item purchase invoice — saves one `purchases` row per item,
+ *  all sharing one invoice_no + payment mode, mirroring createSaleBill's
+ *  bill_no grouping so PreviousPurchases can group rows the same way
+ *  PreviousBills groups sales rows. */
+export async function createPurchaseInvoice(
+  branchId: string, userId: string, supplier: string, invoiceNo: string | undefined,
+  payment: PaymentInput, items: PurchaseCartItem[],
+): Promise<{ invoiceNo: string; total: number }> {
+  const inv = invoiceNo?.trim() || nextPurchaseNo();
+  const sup = supplier.trim();
+  const now = new Date().toISOString();
+  let total = 0;
+
+  for (const it of items) {
+    let lineTotal: number; let effCost = it.cost;
+    if (it.lineTotalOverride !== undefined) {
+      lineTotal = it.lineTotalOverride;
+      effCost = it.qty > 0 ? Math.round((lineTotal / it.qty) * 100) / 100 : it.cost;
+    } else {
+      lineTotal = it.qty * it.cost;
+    }
+    total += lineTotal;
+    await localdb.purchases.add({
+      id: uuid(), branch_id: branchId, created_by: userId, product_id: it.product_id ?? null,
+      product_name: it.product_name, supplier: sup, qty: it.qty, cost: effCost, total: Math.round(lineTotal * 100) / 100,
+      box_qty: it.boxQty, pcs_qty: it.pcsQty, box_cost: it.boxCost,
+      invoice_no: inv, payment_mode: payment.mode,
+      cash_amount: payment.mode === "both" ? Number(payment.cashAmount) || 0 : undefined,
+      upi_amount: payment.mode === "both" ? Number(payment.upiAmount) || 0 : undefined,
+      note: null, created_at: now, deleted_at: null, _synced: 0,
+    });
+  }
+
+  total = Math.round(total * 100) / 100;
+  return { invoiceNo: inv, total };
+}
+
 /** Stock adjustment (opening stock / wastage) — recorded as a zero-cost
  *  purchase so it flows into computed inventory. Positive adds, negative removes. */
 export async function addStockAdjustment(branchId: string, userId: string, product: { id: string; name: string }, deltaQty: number, reason: string): Promise<void> {
@@ -207,19 +263,26 @@ export async function addStockAdjustment(branchId: string, userId: string, produ
 }
 
 /** Owner company profile for invoices (online write, RLS: owner only). */
-export async function saveSettings(s: Settings, online: boolean): Promise<boolean> {
-  if (!online) return false;
+export async function saveSettings(s: Settings, online: boolean): Promise<{ ok: boolean; error?: string }> {
+  if (!online) return { ok: false, error: "You're offline right now — try again once you have a connection." };
   const row = { ...s, id: "main" };
   const { error } = await supabase.from("app_settings").upsert(row);
-  if (error) return false;
+  if (error) return { ok: false, error: error.message };
   await localdb.settings.put(row);
-  return true;
+  return { ok: true };
 }
 
 /** Add a customer — saved locally first, syncs when online. */
 export async function addCustomer(branchId: string, name: string, phone: string): Promise<void> {
-  const row: Customer = { id: uuid(), branch_id: branchId, name: name.trim(), phone: phone.trim() || null, balance_due: 0, _synced: 0 };
+  const row: Customer = { id: uuid(), branch_id: branchId, name: name.trim(), phone: phone.trim() || null, balance_due: 0, active: true, _synced: 0 };
   await localdb.customers.add(row);
+}
+
+/** Toggle a customer's active/inactive status — a soft flag (still counts
+ *  toward dues/ledger/history everywhere), purely for the Customers list's
+ *  Active/Inactive filter. Not a delete — no data is hidden or removed. */
+export async function setCustomerActive(customer: Customer, active: boolean): Promise<void> {
+  await localdb.customers.put({ ...customer, active, _synced: 0 });
 }
 
 /** Create an udhaar bill; increases the customer's balance if they exist. */
@@ -241,6 +304,34 @@ export async function recordPayment(bill: Bill, amount: number): Promise<void> {
   const due = Math.max(0, bill.amount - paid);
   await localdb.bills.put({ ...bill, paid, due_amount: due, status: due <= 0 ? "paid" : "unpaid", _synced: 0 });
   await bumpCustomerBalance(bill.branch_id, bill.customer_name, -amount);
+}
+
+/** Record a payment against ONE specific bill — this is the function to use
+ *  going forward for "pay this bill" flows (Unpaid Bills' per-bill Pay Now,
+ *  Ledger's per-bill Add Payment). Unlike settleCustomerDues (oldest-first,
+ *  auto-split across all of a customer's unpaid bills), this reduces exactly
+ *  the bill passed in — and logs the event into localdb.payments so a
+ *  history / "Settled" view can show every past payment with its cash/UPI
+ *  breakdown. Does NOT replace recordPayment or settleCustomerDues — both
+ *  are still used elsewhere (StaffLedger/Ledger's settle-all flow). */
+export async function recordBillPayment(
+  branchId: string, userId: string, bill: Bill,
+  payment: { amount: number; cashAmount?: number; upiAmount?: number; mode: "cash" | "upi" | "both" },
+): Promise<void> {
+  const amount = Number(payment.amount) || 0;
+  const paid = bill.paid + amount;
+  const due = Math.max(0, bill.amount - paid);
+  await localdb.bills.put({ ...bill, paid, due_amount: due, status: due <= 0 ? "paid" : "unpaid", _synced: 0 });
+  await bumpCustomerBalance(branchId, bill.customer_name, -amount);
+
+  const row: Payment = {
+    id: uuid(), branch_id: branchId, bill_id: bill.id, customer_name: bill.customer_name,
+    amount,
+    cash_amount: payment.mode === "both" ? payment.cashAmount : (payment.mode === "cash" ? amount : undefined),
+    upi_amount: payment.mode === "both" ? payment.upiAmount : (payment.mode === "upi" ? amount : undefined),
+    mode: payment.mode, created_by: userId, created_at: new Date().toISOString(), deleted_at: null, _synced: 0,
+  };
+  await localdb.payments.add(row);
 }
 
 /** Void an udhaar bill — stays visible everywhere (crossed out / VOID label,

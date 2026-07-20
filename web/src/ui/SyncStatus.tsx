@@ -5,11 +5,10 @@ import { timeAgo } from "../lib/format";
 import { Icon } from "../lib/icons";
 import type { SharedProps } from "./shared";
 
-/** One place that explains exactly what's going on with sync — replaces the
- *  old pair of near-identical "Sync"/"Refresh now" buttons with a single tap
- *  target (the sync pill) that opens this detail view. Shows: online/offline
- *  state, when data last reached Head Office, and (if anything is still
- *  waiting) exactly what and how many, broken down by type. */
+/** Only ever opened from the header's "Sync issue" warning — routine sync
+ *  state is invisible by design (writes are always saved locally first and
+ *  upload automatically in the background). This just explains what's wrong
+ *  and shows exactly what hasn't reached the server yet. */
 export function SyncStatusModal({ shared, onClose }: { shared: SharedProps; onClose: () => void }) {
   const [breakdown, setBreakdown] = useState<{ table: string; label: string; count: number }[]>([]);
   useEffect(() => {
@@ -21,14 +20,13 @@ export function SyncStatusModal({ shared, onClose }: { shared: SharedProps; onCl
   }, []);
 
   const totalPending = breakdown.reduce((a, b) => a + b.count, 0);
-  const state: "offline" | "error" | "pending" | "synced" =
-    !shared.online ? "offline" : shared.syncError ? "error" : totalPending > 0 ? "pending" : "synced";
+  const state: "error" | "pending" | "synced" =
+    shared.syncError ? "error" : totalPending > 0 ? "pending" : "synced";
 
   const stateCopy: Record<typeof state, { title: string; body: string; color: string }> = {
-    offline: { title: "Offline", body: "You're working offline on purpose — everything you save stays safely on this device and will upload automatically the moment you go back online.", color: "var(--red)" },
-    error: { title: "Sync problem", body: shared.syncError || "Something didn't reach Head Office. Your data is safe on this device — we'll keep retrying.", color: "var(--red)" },
-    pending: { title: "Waiting to sync", body: "Everything below is saved on this device and will upload the next time sync runs (automatically, every ~20 seconds while online).", color: "var(--amber)" },
-    synced: { title: "All synced", body: "Everything on this device has reached Head Office.", color: "var(--green)" },
+    error: { title: "Sync problem", body: shared.syncError || "Something didn't reach the server. Your data is safe on this device — we'll keep retrying automatically.", color: "var(--red)" },
+    pending: { title: "Catching up", body: "This is saved safely on this device and is uploading now.", color: "var(--amber)" },
+    synced: { title: "All good now", body: "Everything on this device has reached the server.", color: "var(--green)" },
   };
   const copy = stateCopy[state];
 
@@ -37,7 +35,7 @@ export function SyncStatusModal({ shared, onClose }: { shared: SharedProps; onCl
       <div className="form-grid">
         <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: 12, background: "var(--surface-2)", border: "1px solid var(--line)" }}>
           <div style={{ width: 40, height: 40, borderRadius: "50%", background: copy.color + "22", color: copy.color, display: "grid", placeItems: "center", flexShrink: 0 }}>
-            <Icon name={state === "synced" ? "check" : state === "offline" ? "warning" : "sync"} size={19} />
+            <Icon name={state === "synced" ? "check" : "sync"} size={19} />
           </div>
           <div>
             <div style={{ fontWeight: 700, fontSize: 14.5, color: copy.color }}>{copy.title}</div>
@@ -48,10 +46,6 @@ export function SyncStatusModal({ shared, onClose }: { shared: SharedProps; onCl
         <div className="row" style={{ padding: "8px 0" }}>
           <span className="sub">Last synced</span>
           <b style={{ fontSize: 13 }}>{shared.syncing ? "Syncing…" : timeAgo(shared.lastSyncedAt)}</b>
-        </div>
-
-        <div style={{ fontSize: 12, color: "var(--muted)", background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "9px 12px" }}>
-          Weak signal area? Tap the <b>Online / Offline mode</b> button in the header to force offline saving on purpose — nothing will try to reach the network until you tap it again, then it syncs automatically.
         </div>
 
         {breakdown.length > 0 && (

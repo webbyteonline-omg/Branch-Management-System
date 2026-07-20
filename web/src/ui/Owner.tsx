@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { localdb, pendingCount } from "../lib/db";
+import { localdb } from "../lib/db";
 import { Icon } from "../lib/icons";
 import { money, dateStr, timeStr, initials, rangeStart, prevRange, rangeLabel, pctDelta } from "../lib/format";
 import type { Range, Product, Settings } from "../lib/types";
@@ -13,6 +13,7 @@ import { LedgerModal } from "./Ledger";
 import { EditCustomerModal, EditEntryModal } from "./Edits";
 import { downloadExcel } from "../lib/excel";
 import { supabase } from "../lib/supabase";
+import { fetchRangeFresh } from "../lib/sync";
 import { BarChart, Donut } from "./Charts";
 import { AddCustomerModal, AddExpenseModal, AddPurchaseModal } from "./OwnerAdd";
 import { SyncStatusModal } from "./SyncStatus";
@@ -70,7 +71,6 @@ export function Owner(p: SharedProps) {
   const prodAll = useLiveQuery(() => localdb.products.toArray(), [], []);
   const expAll = useLiveQuery(() => localdb.expenses.toArray(), [], []);
   const settings = useLiveQuery(() => localdb.settings.get("main"), [], undefined);
-  const pending = useLiveQuery(() => pendingCount(), [], 0) ?? 0;
   const [staffMap, setStaffMap] = useState<Record<string, string>>({});
   useEffect(() => { supabase.from("profiles").select("id,name").then(({ data }) => { if (data) setStaffMap(Object.fromEntries(data.map((u: any) => [u.id, u.name]))); }); }, []);
 
@@ -191,16 +191,15 @@ export function Owner(p: SharedProps) {
           </div>
           <button className="hbtn hide-desktop" onClick={() => setOpen(true)}><Icon name="menu" /></button>
           <div className="header-right">
-            <button className="hbtn" onClick={p.onSync} title="Refresh now" disabled={p.syncing} style={{ flexShrink: 0 }}>
-              <Icon name="refresh" size={17} className={p.syncing ? "spin" : ""} />
-            </button>
-            <button className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")} style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync status">
-              <span className="dot" /><span className="hide-mobile">{p.syncError ? "Sync error" : pending > 0 ? `${pending} to sync` : "All synced"}</span>
-            </button>
-            <button className={"net-toggle-switch " + (p.online ? "online" : "offline")} onClick={p.onToggleOnline} title={p.online ? "Tap to switch to offline mode (saves only on this device)" : "Tap to go back online — will auto-sync"}>
-              <span className="nts-track"><span className="nts-knob"><Icon name={p.online ? "cloud" : "warning"} size={12} /></span></span>
-              <span className="hide-mobile">{p.online ? "Online" : "Offline mode"}</span>
-            </button>
+            {/* Everything just works silently in the background — no online/
+             * offline toggle, no routine sync status. The only thing shown
+             * here is a small warning, and only when there's an actual
+             * problem (a save hasn't reached the server after a while). */}
+            {p.syncError && (
+              <button className="sync-pill pending" style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync problem — tap for details">
+                <span className="dot" /><span className="hide-mobile">Sync issue</span>
+              </button>
+            )}
             <button className="btn" style={{ width: "auto", padding: "9px 14px", borderRadius: 999, flexShrink: 0 }} onClick={p.onLogout}>Logout</button>
           </div>
         </div>
@@ -244,7 +243,7 @@ export function Owner(p: SharedProps) {
           {view === "products" && <ProductsPage prodAll={sProdAll} online={p.online} branches={sBranches} onSync={p.onSync} scope={scope} scopeLabel={scopeLabel} isMobile={isMobile} />}
           {view === "saleshistory" && <SalesHistoryPage sales={sRSales} bmap={bmap} branches={sBranches} staffMap={staffMap} isMobile={isMobile} scope={scope} scopeLabel={scopeLabel} />}
           {view === "daybook" && <DaybookPage rSales={sRSalesT} rPurch={sRPurch} rExp={sRExp} bmap={bmap} range={rangeText} branches={sBranches} userId={p.profile.id} onSync={p.onSync} scope={scope} scopeLabel={scopeLabel} />}
-          {view === "reports" && <ReportsPage rSales={sRSalesT} rPurch={sRPurch} range={range} isCustom={isCustom} cFrom={cFrom} cTo={cTo} setRange={setRange} setCFrom={setCFrom} setCTo={setCTo} />}
+          {view === "reports" && <ReportsPage rSales={sRSalesT} rPurch={sRPurch} range={range} isCustom={isCustom} cFrom={cFrom} cTo={cTo} setRange={setRange} setCFrom={setCFrom} setCTo={setCTo} from={from} to={to} branchIds={scopedBranchIds} />}
           {view === "settings" && <SettingsPage settings={settings} onSync={p.onSync} branches={branches} myId={p.profile.id} />}
         </div>
       </div>
@@ -1335,15 +1334,31 @@ function DaybookPage({ rSales, rPurch, rExp, bmap, range, branches, userId, onSy
  * Kept deliberately simple per owner request: pick a period (today / week /
  * month / custom), see total sell + total purchase for that period, and
  * export a statement. No charts/leaderboards. */
-function ReportsPage({ rSales, rPurch, range, isCustom, cFrom, cTo, setRange, setCFrom, setCTo }: any) {
+function ReportsPage({ rSales, rPurch, range, isCustom, cFrom, cTo, setRange, setCFrom, setCTo, from, to, branchIds }: any) {
   const totalSell = sum(rSales, "total");
   const totalPurchase = sum(rPurch, "total");
-  const exportStatement = () => {
-    const rows = [
-      ...rSales.map((s: any) => [dateStr(s.created_at), timeStr(s.created_at), "Sale", s.product_name, s.qty, money(s.total)]),
-      ...rPurch.map((x: any) => [dateStr(x.created_at), timeStr(x.created_at), "Purchase", x.product_name, x.qty, money(x.total)]),
-    ].sort((a, b) => (a[0] as string).localeCompare(b[0] as string));
-    downloadExcel("statement", ["Date", "Time", "Type", "Item", "Qty", "Amount"], rows);
+  const [exporting, setExporting] = useState(false);
+  // Local cache only keeps the most recent ~2000 rows per table — fine for
+  // the KPI totals above (recent data), but a statement export must be
+  // complete even for an older custom range, so it fetches fresh from the
+  // server for the exact window instead of trusting the capped local copy.
+  const exportStatement = async () => {
+    setExporting(true);
+    try {
+      const [sales, purch] = await Promise.all([
+        fetchRangeFresh<any>("sales", from, to, branchIds),
+        fetchRangeFresh<any>("purchases", from, to, branchIds),
+      ]);
+      const rows = [
+        ...sales.filter((s) => !s.deleted_at && !s.void_at).map((s) => [dateStr(s.created_at), timeStr(s.created_at), "Sale", s.product_name, s.qty, money(s.total)]),
+        ...purch.filter((x) => !x.deleted_at).map((x) => [dateStr(x.created_at), timeStr(x.created_at), "Purchase", x.product_name, x.qty, money(x.total)]),
+      ].sort((a, b) => (a[0] as string).localeCompare(b[0] as string));
+      downloadExcel("statement", ["Date", "Time", "Type", "Item", "Qty", "Amount"], rows);
+    } catch (e: any) {
+      toast("Could not export — " + (e?.message || "please try again"));
+    } finally {
+      setExporting(false);
+    }
   };
   return (
     <><h1 className="page-title">Reports</h1><p className="page-sub">Sell & purchase summary · {rangeLabel(range).toLowerCase()}.</p>
@@ -1372,7 +1387,7 @@ function ReportsPage({ rSales, rPurch, range, isCustom, cFrom, cTo, setRange, se
           <div style={{ fontSize: 12.5, color: "var(--muted)", marginTop: 4 }}>{rPurch.length} entr{rPurch.length === 1 ? "y" : "ies"}</div>
         </div>
       </div>
-      <button className="btn" style={{ width: "auto", padding: "11px 20px", marginTop: 16 }} onClick={exportStatement}>Export statement (Excel)</button>
+      <button className="btn" style={{ width: "auto", padding: "11px 20px", marginTop: 16 }} onClick={exportStatement} disabled={exporting}>{exporting ? "Preparing…" : "Export statement (Excel)"}</button>
     </>
   );
 }
@@ -1382,8 +1397,8 @@ function SettingsPage({ settings, onSync, branches, myId }: any) {
   const [co, setCo] = useState<Settings>(settings ?? { id: "main", company: "", address: "", phone: "", gstin: "", footer: "" });
   useEffect(() => { if (settings) setCo(settings); }, [settings]);
   const saveCo = async () => {
-    const ok = await saveSettings({ ...co, id: "main" }, true);
-    toast(ok ? "Company profile saved" : "Could not save");
+    const res = await saveSettings({ ...co, id: "main" }, true);
+    toast(res.ok ? "Company profile saved" : `Could not save — ${res.error || "unknown error"}`);
     onSync();
   };
 

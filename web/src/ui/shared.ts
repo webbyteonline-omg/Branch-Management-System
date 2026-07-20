@@ -3,7 +3,6 @@ import type { Profile, Sale, Purchase } from "./../lib/types";
 export interface SharedProps {
   profile: Profile;
   online: boolean;
-  onToggleOnline: () => void;
   onLogout: () => void;
   onSync: () => void;
   syncError?: string | null;

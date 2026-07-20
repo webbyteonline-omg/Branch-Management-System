@@ -97,6 +97,17 @@ alter table public.sales add column if not exists pcs_qty numeric(12,2);   -- in
 alter table public.sales add column if not exists box_price numeric(12,2); -- informational: box price used, if any
 alter table public.sales add column if not exists edited_note text;        -- e.g. "Main Office edited this"
 
+-- Products can now be hard-deleted from the Products page (not soft-deleted).
+-- product_name is already denormalized onto every sales/purchases row, so
+-- losing the FK link on delete loses no information — but without this fix,
+-- deleting any product that was ever sold/purchased would be REJECTED by
+-- Postgres (default FK behavior blocks the delete instead of nulling it).
+do $$ begin
+  alter table public.sales drop constraint if exists sales_product_id_fkey;
+  alter table public.sales add constraint sales_product_id_fkey
+    foreign key (product_id) references public.products(id) on delete set null;
+exception when others then null; end $$;
+
 create table if not exists public.purchases (
   id            uuid primary key,
   branch_id     text not null references public.branches(id),
@@ -117,6 +128,19 @@ alter table public.purchases add column if not exists invoice_no text;
 alter table public.purchases add column if not exists payment_mode text not null default 'cash';
 alter table public.purchases add column if not exists note text;
 alter table public.purchases add column if not exists edited_note text;
+alter table public.purchases add column if not exists box_qty numeric(12,2);  -- informational: cartoons/boxes in this line
+alter table public.purchases add column if not exists pcs_qty numeric(12,2);  -- informational: loose pieces in this line
+alter table public.purchases add column if not exists box_cost numeric(12,2); -- informational: box/cartoon cost used, if any
+alter table public.purchases add column if not exists cash_amount numeric(12,2); -- only set when payment_mode = 'both'
+alter table public.purchases add column if not exists upi_amount numeric(12,2);  -- only set when payment_mode = 'both'
+
+-- Same fix as sales — a hard-deleted product must not block existing
+-- purchase history (product_name is already denormalized on this row too).
+do $$ begin
+  alter table public.purchases drop constraint if exists purchases_product_id_fkey;
+  alter table public.purchases add constraint purchases_product_id_fkey
+    foreign key (product_id) references public.products(id) on delete set null;
+exception when others then null; end $$;
 
 create table if not exists public.customers (
   id          uuid primary key default gen_random_uuid(),
@@ -128,6 +152,7 @@ create table if not exists public.customers (
   deleted_at  timestamptz
 );
 alter table public.customers add column if not exists edited_note text;
+alter table public.customers add column if not exists active boolean not null default true;
 
 create table if not exists public.bills (
   id            uuid primary key,
@@ -161,7 +186,24 @@ create table if not exists public.expenses (
   created_at timestamptz not null default now(),
   deleted_at timestamptz
 );
-alter table public.expenses add column if not exists edited_note text;
+
+-- payment history log — one row per payment event recorded against a bill
+-- (or a customer in general). Client-generated uuid PK, same idempotent
+-- upsert pattern as sales/purchases/bills.
+create table if not exists public.payments (
+  id            uuid primary key,
+  branch_id     text not null references branches(id),
+  bill_id       uuid references public.bills(id),
+  customer_name text not null,
+  amount        numeric(12,2) not null,
+  cash_amount   numeric(12,2),
+  upi_amount    numeric(12,2),
+  mode          text not null default 'cash',
+  created_by    uuid references public.profiles(id),
+  created_at    timestamptz not null default now(),
+  deleted_at    timestamptz
+);
+create index if not exists idx_payments_branch_time on public.payments(branch_id, created_at desc);
 
 -- single-row company profile used on printed invoices
 create table if not exists public.app_settings (
@@ -203,6 +245,7 @@ alter table public.purchases enable row level security;
 alter table public.customers enable row level security;
 alter table public.bills     enable row level security;
 alter table public.expenses  enable row level security;
+alter table public.payments  enable row level security;
 alter table public.app_settings enable row level security;
 
 -- reference data: any signed-in user can read; only owner can change
@@ -234,7 +277,7 @@ create policy profiles_write on public.profiles for all to authenticated
 do $$
 declare t text;
 begin
-  foreach t in array array['sales','purchases','customers','bills','expenses'] loop
+  foreach t in array array['sales','purchases','customers','bills','expenses','payments'] loop
     execute format('drop policy if exists %I_read on public.%I', t, t);
     execute format($f$create policy %I_read on public.%I for select to authenticated
       using (public.is_owner() or branch_id = public.app_branch())$f$, t, t);
@@ -259,6 +302,7 @@ do $$ begin
   alter publication supabase_realtime add table public.bills;
   alter publication supabase_realtime add table public.expenses;
   alter publication supabase_realtime add table public.products;
+  alter publication supabase_realtime add table public.payments;
 exception when duplicate_object then null; end $$;
 
 -- ---------- auto-create a profile when a new auth user is added ----------

@@ -1,17 +1,18 @@
 import { useMemo, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { localdb, pendingCount } from "../lib/db";
+import { localdb } from "../lib/db";
 import { Icon } from "../lib/icons";
 import { money, dateStr, timeStr, rangeStart } from "../lib/format";
 import { toast } from "./Toast";
 import { Modal } from "./Modal";
-import { LedgerModal } from "./Ledger";
-import { EditCustomerModal, EditEntryModal, EditBillModal, EditBillGroupModal } from "./Edits";
+import { CustomerLedgerPage } from "./Ledger";
+import { EditBillModal, EditBillGroupModal, EditPurchaseGroupModal } from "./Edits";
 import { SyncStatusModal } from "./SyncStatus";
-import { addCustomer, addBill, recordPayment, addExpense, softDelete, createSaleBill, createPurchase, computeLineTotal, settleCustomerDues, saveProduct, voidBill, voidSaleGroup, type CartItem } from "../lib/writes";
+import { addCustomer, addBill, recordBillPayment, addExpense, softDelete, saveEdit, createSaleBill, createPurchaseInvoice, computeLineTotal, settleCustomerDues, saveProduct, voidBill, voidSaleGroup, ensureCustomer, setCustomerActive, addStockAdjustment, type CartItem } from "../lib/writes";
 import { sum, live, forTotals, computeStock, productsForBranch, type SharedProps } from "./shared";
 import { BarChart } from "./Charts";
 import { downloadExcel } from "../lib/excel";
+import { fetchRangeFresh } from "../lib/sync";
 import type { Purchase, Bill as BillT, Product as ProductT } from "../lib/types";
 
 const confirmDel = (what: string) => window.confirm(`Delete this ${what}? It can be restored by the owner.`);
@@ -25,7 +26,6 @@ export function Staff(p: SharedProps) {
   const branchId = p.profile.branch_id!;
   const branches = useLiveQuery(() => localdb.branches.toArray(), [], []);
   const branchName = branches.find((b) => b.id === branchId)?.name ?? "My Branch";
-  const pending = useLiveQuery(() => pendingCount(), [], 0) ?? 0;
 
   // Bottom bar: the 5 most-used. Everything (incl. these) also lives in the hamburger menu.
   const tabs: [Tab, string, string][] = [
@@ -53,10 +53,11 @@ export function Staff(p: SharedProps) {
           <b style={{ fontSize: 15.5, fontWeight: 700, lineHeight: 1.1 }}>{branchName}</b>
         </div>
         <div className="actions">
-          <button className={"sync-pill " + (p.syncError ? "pending" : pending > 0 ? "pending" : "ok")}
-            style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync status">
-            <span className="dot" />{p.syncError ? "Sync error" : pending > 0 ? `${pending} pending` : "Synced"}
-          </button>
+          {p.syncError && (
+            <button className="sync-pill pending" style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync issue — tap for details">
+              <span className="dot" />Sync issue
+            </button>
+          )}
         </div>
       </div>
       {p.syncError && (
@@ -66,14 +67,14 @@ export function Staff(p: SharedProps) {
       )}
       <div className="m-content">
         {tab === "dashboard" && <StaffDashboard branchId={branchId} branchName={branchName} shared={p} go={go} />}
-        {tab === "sale" && <NewBillForm branchId={branchId} shared={p} branchName={branchName} />}
-        {tab === "purchase" && <PurchaseForm branchId={branchId} shared={p} />}
+        {tab === "sale" && <BillingScreen branchId={branchId} shared={p} branchName={branchName} />}
+        {tab === "purchase" && <PurchaseScreen branchId={branchId} shared={p} />}
         {tab === "unpaid" && <UnpaidBills branchId={branchId} shared={p} />}
         {tab === "previous" && <PreviousBills branchId={branchId} shared={p} branchName={branchName} />}
         {tab === "customers" && <Customers branchId={branchId} shared={p} />}
         {tab === "products" && <StaffProducts branchId={branchId} shared={p} />}
         {tab === "ledger" && <StaffLedger branchId={branchId} shared={p} />}
-        {tab === "stock" && <StaffStock branchId={branchId} />}
+        {tab === "stock" && <StaffStock branchId={branchId} shared={p} />}
         {tab === "daybook" && <Daybook branchId={branchId} shared={p} />}
       </div>
       <div className="tabbar">
@@ -97,9 +98,11 @@ export function Staff(p: SharedProps) {
               <button className="icon-btn" onClick={() => setShowMenu(false)}><Icon name="close" size={18} /></button>
             </div>
             <div className="modal-body" style={{ padding: 10, flex: 1, display: "flex", flexDirection: "column" }}>
-              <button className={"net-toggle " + (p.online ? "online" : "offline")} style={{ margin: "0 0 8px", width: "100%", padding: "10px 0" }} onClick={p.onToggleOnline} title={p.online ? "Tap to force offline mode" : "Tap to go back online — will auto-sync"}>
-                {p.online ? "Online — tap for offline mode" : "Offline mode — tap to reconnect"}
-              </button>
+              {!p.online && (
+                <div className="net-toggle offline" style={{ margin: "0 0 8px", width: "100%", padding: "10px 0", textAlign: "center" }}>
+                  No network — saving on this device, will sync automatically
+                </div>
+              )}
               {menuItems.map(([t, label, ic]) => (
                 <button key={t} className={"nav-item" + (tab === t ? " active" : "")} style={{ borderRadius: 999 }} onClick={() => go(t)}>
                   <Icon name={ic} size={19} /><span>{label}</span>
@@ -155,28 +158,59 @@ function StaffDashboard({ branchId, branchName, shared, go }: { branchId: string
 
   const recent = [...sales].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()).slice(0, 4);
 
+  // Avatar tint rotation for Recent Activity rows — mirrors the SST reference's
+  // per-row color variety (secondary/primary/surface-highest/tertiary/variant).
+  const avatarTints = [
+    { bg: "var(--green-soft)", fg: "var(--green)" },
+    { bg: "var(--accent-soft)", fg: "var(--accent)" },
+    { bg: "var(--surface-4)", fg: "var(--text)" },
+    { bg: "var(--red-soft)", fg: "var(--red)" },
+    { bg: "var(--surface-3)", fg: "var(--muted)" },
+  ];
+  const initialsOf = (name: string) =>
+    (name || "Walk-in").split(" ").map((w) => w[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+
   return (
     <>
-      <button className="btn" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "16px", borderRadius: 12, fontSize: 16, fontWeight: 700, marginBottom: 18, boxShadow: "var(--shadow-lg)" }} onClick={() => go("sale")}>
-        <Icon name="addCircle" size={22} /> New Bill
-      </button>
+      {/* Primary actions */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <button
+          className="btn"
+          style={{ height: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 8, fontSize: 14, fontWeight: 700 }}
+          onClick={() => go("sale")}
+        >
+          <Icon name="addCircle" size={20} /> New Bill
+        </button>
+        <button
+          className="btn"
+          style={{ height: 48, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, borderRadius: 8, fontSize: 14, fontWeight: 700, background: "var(--surface)", color: "var(--accent)", border: "1px solid var(--accent)" }}
+          onClick={() => go("unpaid")}
+        >
+          <Icon name="warning" size={20} /> Record Pay
+        </button>
+      </div>
 
-      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
-        <div className="stat" style={{ textAlign: "center", boxShadow: "var(--shadow-lg)" }}>
-          <div className="label" style={{ textTransform: "uppercase" }}>Sold Today</div>
-          <div className="value" style={{ color: "var(--accent)", fontSize: 19 }}>{money(sold)}</div>
+      {/* Bento stats */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+        <div className="card" style={{ gridColumn: "1 / -1", padding: 16, position: "relative", overflow: "hidden" }}>
+          <div style={{ position: "absolute", right: -16, top: -16, width: 96, height: 96, borderRadius: "50%", background: "var(--accent-soft)", opacity: 0.5 }} />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", position: "relative" }}>
+            <span style={{ fontSize: 14, fontWeight: 500, color: "var(--muted)" }}>Sold Today</span>
+            <Icon name="reports" size={20} />
+          </div>
+          <div style={{ fontSize: 28, lineHeight: "36px", fontWeight: 700, color: "var(--accent)", position: "relative" }}>{money(sold)}</div>
         </div>
-        <div className="stat" style={{ textAlign: "center", boxShadow: "var(--shadow-lg)" }}>
-          <div className="label" style={{ textTransform: "uppercase" }}>Received</div>
-          <div className="value" style={{ color: "var(--green)", fontSize: 19 }}>{money(receivedToday)}</div>
+        <div className="card" style={{ padding: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--muted)", marginBottom: 8 }}>Received Today</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "var(--green)" }}>{money(receivedToday)}</div>
         </div>
-        <div className="stat" style={{ textAlign: "center", boxShadow: "var(--shadow-lg)" }}>
-          <div className="label" style={{ textTransform: "uppercase" }}>Due</div>
-          <div className="value" style={{ fontSize: 19, color: due > 0 ? "var(--red)" : "var(--green)" }}>{money(due)}</div>
+        <div className="card" style={{ padding: 12 }}>
+          <div style={{ fontSize: 14, fontWeight: 500, color: "var(--muted)", marginBottom: 8 }}>Due</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: due > 0 ? "var(--red)" : "var(--green)" }}>{money(due)}</div>
         </div>
       </div>
 
-      <div className="card card-pad" style={{ marginTop: 16, boxShadow: "var(--shadow-lg)" }}>
+      <div className="card card-pad" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
           <h3 style={{ margin: 0, fontSize: 15 }}>Sales — Last 7 Days</h3>
           <span style={{ fontSize: 12, color: "var(--muted)" }}>{chartData[0]?.label} – {chartData[6]?.label}</span>
@@ -184,69 +218,139 @@ function StaffDashboard({ branchId, branchName, shared, go }: { branchId: string
         <BarChart data={chartData} color="var(--accent)" />
       </div>
 
-      <div style={{ marginTop: 18 }}>
-        <h3 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--muted)", margin: "0 0 10px" }}>Recent Activity</h3>
-        {recent.length ? recent.map((s) => (
-          <div className="row" key={s.id} style={{ background: "var(--surface)", border: "1px solid var(--line)", borderRadius: 10, padding: "12px 14px", marginBottom: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 40, height: 40, borderRadius: "50%", background: "var(--accent-soft)", color: "var(--accent)", display: "grid", placeItems: "center" }}>
-                <Icon name="bill" size={18} />
+      {/* Recent activity list */}
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, margin: 0 }}>Recent Activity</h2>
+          <button style={{ color: "var(--accent)", fontSize: 14, fontWeight: 500 }} onClick={() => go("previous")}>View All</button>
+        </div>
+        <div className="card" style={{ overflow: "hidden" }}>
+          {recent.length ? recent.map((s, i) => {
+            const tint = avatarTints[i % avatarTints.length];
+            return (
+              <div
+                key={s.id}
+                style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: 12, borderBottom: i < recent.length - 1 ? "1px solid var(--line-2)" : "none" }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: "50%", background: tint.bg, color: tint.fg, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 14 }}>
+                    {initialsOf(s.customer_name || s.product_name)}
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column" }}>
+                    <span style={{ fontSize: 14, fontWeight: 600 }}>{s.customer_name || "Walk-in"}</span>
+                    <span style={{ fontSize: 12, color: "var(--muted)" }}>{s.product_name} • {timeStr(s.created_at)}</span>
+                  </div>
+                </div>
+                <span style={{ fontSize: 16, fontWeight: 700 }}>{money(s.total)}</span>
               </div>
-              <div><div className="main">{s.product_name}</div><div className="sub">{s.customer_name || "Walk-in"} • {timeStr(s.created_at)}</div></div>
-            </div>
-            <span style={{ fontWeight: 700 }}>{money(s.total)}</span>
-          </div>
-        )) : <div className="empty">No activity yet today.</div>}
+            );
+          }) : <div className="empty" style={{ padding: 16 }}>No activity yet today.</div>}
+        </div>
       </div>
-      {!shared && null}
     </>
   );
 }
 
-/* ---------- Stock (with Products) ---------- */
-function StaffStock({ branchId }: { branchId: string }) {
+/* ---------- Stock (separate from Products — quantities only) ---------- */
+/* Stock is computed live (purchases in − sales out, see computeStock) — it
+ * is NOT a stored field on Product, so: (1) a product removed on the
+ * Products page disappears from here automatically (same productsForBranch
+ * source), and (2) cutting a bill reduces stock the instant that sale is
+ * saved, with zero extra wiring needed. Manual "Save Changes" below writes
+ * the DIFFERENCE between the typed value and the current computed stock as
+ * a stock-adjustment purchase row (addStockAdjustment) — it does not
+ * overwrite anything, it just nudges the running total to match reality
+ * (e.g. after a physical count). */
+function StaffStock({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
   const sales = live(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const purch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const [q, setQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"" | "out" | "low" | "in">("");
+  const [edits, setEdits] = useState<Record<string, { box: number; pcs: number }>>({});
 
   const allRows = products
-    .map((pr) => ({ ...pr, stock: computeStock(pr.id, branchId, sales, purch) }))
+    .map((pr) => {
+      const stock = computeStock(pr.id, branchId, sales, purch);
+      const perBox = pr.pieces_per_box || 0;
+      const box = perBox ? Math.floor(stock / perBox) : 0;
+      const pcs = perBox ? stock % perBox : stock;
+      return { ...pr, stock, perBox, box, pcs };
+    })
     .filter((pr) => pr.name.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const statusOf = (r: any) => r.stock <= 0 ? "out" : r.stock <= (r.low_stock_at ?? 5) ? "low" : "in";
-  const rows = statusFilter ? allRows.filter((r) => statusOf(r) === statusFilter) : allRows;
-  const outCount = allRows.filter((r) => statusOf(r) === "out").length;
-  const lowCount = allRows.filter((r) => statusOf(r) === "low").length;
-  const inCount = allRows.filter((r) => statusOf(r) === "in").length;
+
+  const lowCount = allRows.filter((r) => r.stock <= (r.low_stock_at ?? 5)).length;
+  const totalValue = allRows.reduce((a, r) => a + r.stock * (r.sale_price || 0), 0);
+
+  const editFor = (pr: (typeof allRows)[number]) => edits[pr.id] ?? { box: pr.box, pcs: pr.pcs };
+  const setEditFor = (pr: (typeof allRows)[number], patch: Partial<{ box: number; pcs: number }>) =>
+    setEdits((e) => ({ ...e, [pr.id]: { ...editFor(pr), ...patch } }));
+  const isDirty = (pr: (typeof allRows)[number]) => {
+    const e = edits[pr.id];
+    return !!e && (e.box !== pr.box || e.pcs !== pr.pcs);
+  };
+
+  const saveChanges = async (pr: (typeof allRows)[number]) => {
+    const e = editFor(pr);
+    const newTotal = pr.perBox ? e.box * pr.perBox + e.pcs : e.pcs;
+    const delta = newTotal - pr.stock;
+    if (delta === 0) { setEdits((all) => { const n = { ...all }; delete n[pr.id]; return n; }); return; }
+    await addStockAdjustment(branchId, shared.profile.id, { id: pr.id, name: pr.name }, delta, "Manual stock update");
+    toast(`${pr.name} stock updated`);
+    setEdits((all) => { const n = { ...all }; delete n[pr.id]; return n; });
+    shared.onSync();
+  };
 
   return (
     <>
       <div className="field" style={{ position: "relative", marginBottom: 14 }}>
         <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={17} /></span>
-        <input style={{ paddingLeft: 38, height: 48, borderRadius: 12 }} placeholder="Search product name…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input style={{ paddingLeft: 38, height: 48, borderRadius: 12 }} placeholder="Search products…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
-      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr 1fr", marginBottom: 16 }}>
-        <div className="stat" style={{ textAlign: "center", cursor: "pointer", outline: statusFilter === "in" ? "2px solid var(--green)" : undefined, outlineOffset: -2 }} onClick={() => setStatusFilter(statusFilter === "in" ? "" : "in")}><div className="label">In Stock</div><div className="value" style={{ fontSize: 19, color: "var(--green)" }}>{inCount}</div></div>
-        <div className="stat" style={{ textAlign: "center", cursor: "pointer", outline: statusFilter === "low" ? "2px solid var(--amber)" : undefined, outlineOffset: -2 }} onClick={() => setStatusFilter(statusFilter === "low" ? "" : "low")}><div className="label">Low Stock</div><div className="value" style={{ fontSize: 19, color: lowCount > 0 ? "var(--amber)" : "var(--muted)" }}>{lowCount}</div></div>
-        <div className="stat" style={{ textAlign: "center", cursor: "pointer", outline: statusFilter === "out" ? "2px solid var(--red)" : undefined, outlineOffset: -2 }} onClick={() => setStatusFilter(statusFilter === "out" ? "" : "out")}><div className="label">Out of Stock</div><div className="value" style={{ fontSize: 19, color: outCount > 0 ? "var(--red)" : "var(--muted)" }}>{outCount}</div></div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div className="card card-pad">
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>Total Items</div>
+          <div style={{ fontSize: 19, fontWeight: 700, marginTop: 4 }}>{allRows.length}</div>
+        </div>
+        <div className="card card-pad" style={{ borderColor: lowCount > 0 ? "var(--red)" : undefined }}>
+          <div style={{ fontSize: 12, color: lowCount > 0 ? "var(--red)" : "var(--muted)" }}>Low Stock</div>
+          <div style={{ fontSize: 19, fontWeight: 700, marginTop: 4, color: lowCount > 0 ? "var(--red)" : "var(--text)" }}>{lowCount}</div>
+        </div>
       </div>
-      {statusFilter && <button className="btn ghost" style={{ width: "auto", padding: "6px 14px", fontSize: 12.5, marginBottom: 12 }} onClick={() => setStatusFilter("")}>✕ Clear filter</button>}
-      {rows.length ? rows.map((pr) => {
+      <div className="card card-pad" style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 12, color: "var(--muted)" }}>Estimated Stock Value</div>
+        <div style={{ fontSize: 19, fontWeight: 700, marginTop: 4 }}>{money(totalValue)}</div>
+      </div>
+
+      <h3 style={{ fontSize: 14, color: "var(--muted)", margin: "0 0 10px" }}>All Products</h3>
+      {allRows.length ? allRows.map((pr) => {
         const low = pr.stock <= (pr.low_stock_at ?? 5);
+        const e = editFor(pr);
+        const dirty = isDirty(pr);
         return (
           <div key={pr.id} className="card card-pad" style={{ marginBottom: 10, borderColor: low ? "var(--red)" : undefined, position: "relative", overflow: "hidden" }}>
             {low && <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: "var(--red)" }} />}
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div className="main" style={{ fontWeight: 700 }}>{pr.name}</div>
-              <span className={"status-pill " + (low ? "warn" : "ok")}>{low ? "Low Stock" : "In Stock"}</span>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>{pr.name}</div>
+              {low && <span className="status-pill warn">Low Stock</span>}
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
-              <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Unit</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{pr.unit}</div></div>
-              <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Stock</div><div style={{ fontWeight: 800, fontSize: 16, color: low ? "var(--red)" : "var(--text)" }}>{pr.stock}</div></div>
-              <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Sale Price</div><div style={{ fontWeight: 600, fontSize: 13.5, color: "var(--accent)" }}>{money(pr.sale_price)}</div></div>
+            <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+              {!!pr.perBox && (
+                <div className="field" style={{ marginBottom: 0, flex: 1 }}>
+                  <label style={{ fontSize: 10, textTransform: "uppercase" }}>Boxes</label>
+                  <input type="number" inputMode="numeric" value={e.box} onChange={(ev) => setEditFor(pr, { box: +ev.target.value })} style={{ fontWeight: 700 }} />
+                </div>
+              )}
+              <div className="field" style={{ marginBottom: 0, flex: 1 }}>
+                <label style={{ fontSize: 10, textTransform: "uppercase" }}>Pieces</label>
+                <input type="number" inputMode="numeric" value={e.pcs} onChange={(ev) => setEditFor(pr, { pcs: +ev.target.value })} style={{ fontWeight: 700 }} />
+              </div>
             </div>
+            {dirty && (
+              <button className="btn" style={{ width: "100%", marginTop: 10, padding: "9px 0", fontSize: 13.5 }} onClick={() => saveChanges(pr)}>
+                Save Changes
+              </button>
+            )}
           </div>
         );
       }) : <div className="card card-pad"><div className="empty">No products for this branch yet.</div></div>}
@@ -254,13 +358,18 @@ function StaffStock({ branchId }: { branchId: string }) {
   );
 }
 
-/* ---------- Products (add / edit / delete, own branch only) ---------- */
+/* ---------- Products (name + price only — add / edit / delete, own branch only) ---------- */
 function StaffProducts({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const prodAll = useLiveQuery(() => localdb.products.toArray(), [], []);
   const products = productsForBranch(prodAll, branchId).sort((a, b) => a.name.localeCompare(b.name));
   const [q, setQ] = useState("");
   const [edit, setEdit] = useState<Partial<ProductT> | null>(null);
-  const blank: Partial<ProductT> = { name: "", unit: "pcs", sale_price: 0, cost_price: 0, low_stock_at: 5, branch_id: branchId };
+  // pieces_per_box defaults to 1 for new products so a "Price / Box" entered
+  // here always has somewhere to live (box_price) without needing a separate
+  // "pieces per box" field on this simplified page — Stock page still shows
+  // Boxes/Pieces using whatever pieces_per_box was originally set for the
+  // product (unchanged if this was an existing product being edited).
+  const blank: Partial<ProductT> = { name: "", unit: "pcs", sale_price: 0, cost_price: 0, low_stock_at: 5, pieces_per_box: 1, branch_id: branchId };
   const rows = products.filter((pr) => pr.name.toLowerCase().includes(q.toLowerCase()));
 
   const save = async () => {
@@ -269,62 +378,64 @@ function StaffProducts({ branchId, shared }: { branchId: string; shared: SharedP
     await saveProduct({ ...edit, branch_id: branchId } as any, branchId);
     toast("Product saved" + (shared.online ? "" : " offline")); setEdit(null); shared.onSync();
   };
-  const delProd = async (pr: ProductT) => { if (confirmDel("product")) { await softDelete("products", pr.id); toast("Deleted"); shared.onSync(); } };
+  // Soft-delete: the same mechanism every other delete in this app uses
+  // (bills/purchases/customers). productsForBranch() already filters out
+  // deleted_at rows everywhere — Products, Stock, Billing search, Purchase
+  // picker — so this is a complete, permanent removal from every screen,
+  // and (unlike a true hard delete) it stays safe offline with no risk of
+  // the product reappearing if a delete sync retry is needed.
+  const delProd = async (pr: ProductT) => { if (confirmDel("product")) { await softDelete("products", pr.id); toast("Product removed"); shared.onSync(); } };
 
   return (
     <>
-      <div className="field" style={{ position: "relative", marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <h1 className="page-title" style={{ fontSize: 24, margin: 0 }}>Products</h1>
+        <button className="btn" style={{ width: "auto", padding: "10px 18px", display: "flex", alignItems: "center", gap: 6, borderRadius: 10 }} onClick={() => setEdit({ ...blank })}>
+          <Icon name="plus" size={16} /> Add
+        </button>
+      </div>
+      <div className="field" style={{ position: "relative", marginBottom: 16 }}>
         <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={17} /></span>
         <input style={{ paddingLeft: 38, height: 48, borderRadius: 12 }} placeholder="Search products…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
-      <div className="m-stats" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 16 }}>
-        <div className="stat" style={{ textAlign: "center" }}><div className="label">Products</div><div className="value" style={{ fontSize: 19, color: "var(--accent)" }}>{products.length}</div></div>
-        <div className="stat" style={{ textAlign: "center" }}><div className="label">Catalog Value</div><div className="value" style={{ fontSize: 19 }}>{money(sum(products, "sale_price"))}</div></div>
-      </div>
-      {rows.length ? rows.map((pr) => (
-        <div key={pr.id} className="card card-pad" style={{ marginBottom: 10 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-            <div className="main" style={{ fontWeight: 700 }}>{pr.name}{pr._synced === 0 ? " · ⏳" : ""}</div>
-            <span className="b-tag">{pr.branch_id ? "This branch" : "All branches"}</span>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: pr.pieces_per_box ? "1fr 1fr 1fr 1fr" : "1fr 1fr 1fr", gap: 10, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
-            <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Unit</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{pr.unit}</div></div>
-            <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Cost</div><div style={{ fontWeight: 600, fontSize: 13.5 }}>{money(pr.cost_price)}</div></div>
-            <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Piece Price</div><div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--accent)" }}>{money(pr.sale_price)}</div></div>
-            {!!pr.pieces_per_box && (
-              <div><div style={{ fontSize: 10, color: "var(--faint)", textTransform: "uppercase" }}>Box Price</div><div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--accent)" }}>{money(pr.box_price || pr.pieces_per_box * pr.sale_price)}</div></div>
-            )}
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-            <button className="btn ghost" style={{ flex: 1, padding: "9px 0" }} onClick={() => setEdit({ ...pr })}>Edit</button>
-            <button className="icon-btn" style={{ width: 40, height: 40, border: "1px solid var(--line)", borderRadius: 10, color: "var(--red)" }} onClick={() => delProd(pr)}><Icon name="trash" size={16} /></button>
-          </div>
-        </div>
-      )) : <div className="card card-pad"><div className="empty">{products.length ? "No products match your search." : "No products yet for this branch."}</div></div>}
 
-      <button className="fab round" onClick={() => setEdit({ ...blank })}><Icon name="plus" size={22} /></button>
+      {rows.length ? rows.map((pr) => {
+        const boxPrice = pr.pieces_per_box ? (pr.box_price || pr.pieces_per_box * pr.sale_price) : null;
+        return (
+          <div key={pr.id} className="card card-pad" style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>{pr.name}{pr._synced === 0 ? " · ⏳" : ""}</div>
+              <button className="icon-btn" style={{ width: 40, height: 40, border: "1px solid var(--accent)", borderRadius: 10, color: "var(--accent)" }} onClick={() => setEdit({ ...pr })}><Icon name="settings" size={16} /></button>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: 12, paddingBottom: 10, borderBottom: "1px solid var(--line-2)" }}>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--faint)" }}>Price / Box</div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{boxPrice != null ? money(boxPrice) : "—"}</div>
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 11, color: "var(--faint)" }}>Price / Piece</div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>{money(pr.sale_price)}</div>
+              </div>
+            </div>
+            <button className="btn ghost" style={{ width: "100%", marginTop: 10, padding: "8px 0", color: "var(--red)", borderColor: "var(--red)", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={() => delProd(pr)}>
+              <Icon name="trash" size={14} /> Delete
+            </button>
+          </div>
+        );
+      }) : <div className="card card-pad"><div className="empty">{products.length ? "No products match your search." : "No products yet for this branch."}</div></div>}
 
       {edit && (
         <Modal title={edit.id ? "Edit product" : "Add product"} onClose={() => setEdit(null)}>
           <div className="form-grid">
-            <div className="field"><label>Name</label><input value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="Product name" /></div>
+            <div className="field"><label>Product Name</label><input value={edit.name ?? ""} onChange={(e) => setEdit({ ...edit, name: e.target.value })} placeholder="Product name" /></div>
             <div className="qty-row">
-              <div className="field"><label>Unit</label><input value={edit.unit ?? ""} onChange={(e) => setEdit({ ...edit, unit: e.target.value })} placeholder="box / kg" /></div>
-              <div className="field"><label>Low-stock alert ≤</label><input type="number" inputMode="numeric" value={edit.low_stock_at ?? 5} onChange={(e) => setEdit({ ...edit, low_stock_at: +e.target.value })} /></div>
-            </div>
-            <div className="qty-row">
-              <div className="field"><label>Cost price (per piece)</label><input type="number" inputMode="numeric" value={edit.cost_price ?? 0} onChange={(e) => setEdit({ ...edit, cost_price: +e.target.value })} /></div>
-              <div className="field"><label>Sale price (per piece)</label><input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} /></div>
-            </div>
-            <div className="field"><label>Pieces per box (leave blank if not sold by box)</label>
-              <input type="number" inputMode="numeric" value={edit.pieces_per_box ?? ""} onChange={(e) => setEdit({ ...edit, pieces_per_box: e.target.value === "" ? null : +e.target.value })} placeholder="e.g. 12" />
-            </div>
-            {!!edit.pieces_per_box && (
-              <div className="qty-row">
-                <div className="field"><label>Box cost price (optional)</label><input type="number" inputMode="numeric" value={edit.box_cost_price ?? ""} onChange={(e) => setEdit({ ...edit, box_cost_price: e.target.value === "" ? null : +e.target.value })} placeholder={`default: ${(edit.pieces_per_box || 0) * (edit.cost_price || 0)}`} /></div>
-                <div className="field"><label>Box sale price (optional bulk rate)</label><input type="number" inputMode="numeric" value={edit.box_price ?? ""} onChange={(e) => setEdit({ ...edit, box_price: e.target.value === "" ? null : +e.target.value })} placeholder={`default: ${(edit.pieces_per_box || 0) * (edit.sale_price || 0)}`} /></div>
+              <div className="field"><label>Price / Box</label>
+                <input type="number" inputMode="numeric" value={edit.box_price ?? ""} onChange={(e) => setEdit({ ...edit, box_price: e.target.value === "" ? null : +e.target.value })} placeholder="0" />
               </div>
-            )}
+              <div className="field"><label>Price / Piece</label>
+                <input type="number" inputMode="numeric" value={edit.sale_price ?? 0} onChange={(e) => setEdit({ ...edit, sale_price: +e.target.value })} placeholder="0" />
+              </div>
+            </div>
             <div className="btn-row"><button className="btn ghost" onClick={() => setEdit(null)}>Cancel</button><button className="btn" onClick={save}>Save product</button></div>
           </div>
         </Modal>
@@ -341,11 +452,8 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
   const [q, setQ] = useState("");
   const [ledger, setLedger] = useState<string | null>(null);
   const [tab, setTab] = useState<"outstanding" | "paid">("outstanding");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [payFor, setPayFor] = useState<{ name: string; due: number } | null>(null);
   const [payAmt, setPayAmt] = useState<number | "">("");
-
-  const toggle = (name: string) => setExpanded((s) => { const n = new Set(s); n.has(name) ? n.delete(name) : n.add(name); return n; });
 
   const outstandingRows = cust.filter((c) => c.balance_due > 0 && c.name.toLowerCase().includes(q.toLowerCase()))
     .sort((a, b) => b.balance_due - a.balance_due);
@@ -376,16 +484,28 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
     }
   };
 
+  // "Full ledger" now opens a full-page single-customer view (Cash+UPI
+  // per-bill payments, Settled page, payment history) instead of the old
+  // read-mostly LedgerModal — this is a sub-view of StaffLedger itself
+  // (same pattern as BillingScreen's new/previous toggle), so the bottom
+  // tabbar and hamburger menu keep working normally while it's open.
+  if (ledger) {
+    return <CustomerLedgerPage branchId={branchId} shared={shared} initialCustomer={ledger} onBack={() => setLedger(null)} />;
+  }
+
   return (
     <>
-      <div className="card" style={{ padding: 20, textAlign: "center", marginBottom: 14 }}>
-        <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".6px", color: "var(--muted)", fontWeight: 700 }}>
+      <div className="card card-pad" style={{ marginBottom: 14, position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", right: -20, top: -20, width: 90, height: 90, borderRadius: "50%", background: tab === "outstanding" ? "var(--accent-soft)" : "var(--green-soft)", opacity: .6 }} />
+        <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".6px", color: "var(--muted)", fontWeight: 700, position: "relative" }}>
           {tab === "outstanding" ? "Total Outstanding" : "Total Settled"}
         </div>
-        <div style={{ fontSize: 28, fontWeight: 800, color: "var(--accent)", marginTop: 6 }}>{money(tab === "outstanding" ? totalDue : sum(bills.filter((b) => b.status === "paid" && !b.void_at), "amount"))}</div>
+        <div style={{ fontSize: 28, fontWeight: 800, color: tab === "outstanding" ? "var(--accent)" : "var(--green)", marginTop: 6, position: "relative" }}>
+          {money(tab === "outstanding" ? totalDue : sum(bills.filter((b) => b.status === "paid" && !b.void_at), "amount"))}
+        </div>
       </div>
 
-      <div className="pill-toggle" style={{ marginBottom: 14 }}>
+      <div className="seg" style={{ marginBottom: 14 }}>
         <button className={tab === "outstanding" ? "active" : ""} onClick={() => setTab("outstanding")}>Outstanding</button>
         <button className={tab === "paid" ? "active" : ""} onClick={() => setTab("paid")}>Paid</button>
       </div>
@@ -394,68 +514,47 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
 
       <div className="field" style={{ position: "relative", marginBottom: 12 }}>
         <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={16} /></span>
-        <input style={{ paddingLeft: 36 }} placeholder="Search customer…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input style={{ paddingLeft: 36, height: 48, borderRadius: 12 }} placeholder="Search customer…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
 
       {tab === "outstanding" ? (
         outstandingRows.length ? outstandingRows.map((c) => {
-          const isOpen = expanded.has(c.name);
           const cBills = billsFor(c.name).filter((b) => b.status === "unpaid");
           return (
-            <div className="card" key={c.id} style={{ marginBottom: 8, overflow: "hidden" }}>
-              <div style={{ padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => toggle(c.name)}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--surface-4)", color: "var(--accent)", display: "grid", placeItems: "center", fontWeight: 800 }}>{c.name.split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase()}</div>
-                  <div><div className="main" style={{ fontWeight: 700 }}>{c.name}</div><div className="sub">{cBills.length} bill{cBills.length === 1 ? "" : "s"} due</div></div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div style={{ textAlign: "right" }}><div className="amt out" style={{ fontSize: 15 }}>{money(c.balance_due)}</div></div>
-                  <button className="btn" style={{ width: "auto", padding: "8px 16px", borderRadius: 10, fontSize: 13 }} onClick={(e) => { e.stopPropagation(); setPayFor({ name: c.name, due: c.balance_due }); setPayAmt(c.balance_due); }}>Pay</button>
-                  <span style={{ color: "var(--faint)", transform: isOpen ? "rotate(180deg)" : undefined, transition: "transform .15s" }}><Icon name="chevronDown" size={18} /></span>
-                </div>
+            <div className="card card-pad" key={c.id} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>{c.name}</div>
+                <div className="amt out" style={{ fontSize: 17, fontWeight: 800 }}>{money(c.balance_due)}</div>
               </div>
-              {isOpen && (
-                <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-                  {cBills.map((b) => (
-                    <div key={b.id} style={{ background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div><div style={{ fontWeight: 700, fontSize: 12.5 }}>{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"}</div>
-                        <div className="sub">{dateStr(b.created_at)} · paid {money(b.paid)} of {money(b.amount)}</div></div>
-                      <span style={{ color: "var(--red)", fontSize: 12.5, fontWeight: 700 }}>{money(b.due_amount)}</span>
-                    </div>
-                  ))}
-                  <button className="edit-btn" style={{ alignSelf: "flex-start", marginTop: 2 }} onClick={() => setLedger(c.name)}>Full ledger</button>
-                </div>
-              )}
+              <div className="sub" style={{ marginTop: 2 }}>{cBills.length} bill{cBills.length === 1 ? "" : "s"} due</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
+                {cBills.slice(0, 3).map((b) => (
+                  <div key={b.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontSize: 13 }}>{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"} <span className="sub">· {dateStr(b.created_at)}</span></div>
+                    <span style={{ color: "var(--red)", fontSize: 13, fontWeight: 700 }}>{money(b.due_amount)}</span>
+                  </div>
+                ))}
+                {cBills.length > 3 && <div className="sub">+ {cBills.length - 3} more</div>}
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <button className="btn ghost" style={{ flex: 1, padding: "9px 0" }} onClick={() => setLedger(c.name)}>Full Ledger</button>
+                <button className="btn" style={{ flex: 1, padding: "9px 0" }} onClick={() => { setPayFor({ name: c.name, due: c.balance_due }); setPayAmt(c.balance_due); }}>Pay</button>
+              </div>
             </div>
           );
         }) : <div className="card card-pad"><div className="empty">No outstanding dues. All clear!</div></div>
       ) : (
         paidNames.length ? paidNames.map((name) => {
-          const isOpen = expanded.has(name);
           const cBills = billsFor(name).filter((b) => b.status === "paid" && !b.void_at);
           const total = sum(cBills, "amount");
           return (
-            <div className="card" key={name} style={{ marginBottom: 8, overflow: "hidden" }}>
-              <div style={{ padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => toggle(name)}>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--green-soft)", color: "var(--green)", display: "grid", placeItems: "center", fontWeight: 800 }}>{name.split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase()}</div>
-                  <div><div className="main" style={{ fontWeight: 700 }}>{name}</div><div className="sub" style={{ color: "var(--green)" }}>Fully Paid · {cBills.length} bill{cBills.length === 1 ? "" : "s"}</div></div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <div className="amt in" style={{ fontSize: 15 }}>{money(total)}</div>
-                  <span style={{ color: "var(--faint)", transform: isOpen ? "rotate(180deg)" : undefined, transition: "transform .15s" }}><Icon name="chevronDown" size={18} /></span>
-                </div>
+            <div className="card card-pad" key={name} style={{ marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>{name}</div>
+                <div className="amt in" style={{ fontSize: 17, fontWeight: 800 }}>{money(total)}</div>
               </div>
-              {isOpen && (
-                <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-                  {cBills.map((b) => (
-                    <div key={b.id} style={{ background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 10, padding: "8px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <div><div style={{ fontWeight: 700, fontSize: 12.5 }}>{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"}</div><div className="sub">{dateStr(b.created_at)}</div></div>
-                      <span className="badge paid">Paid</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="sub" style={{ color: "var(--green)", marginTop: 2 }}>Fully Paid · {cBills.length} bill{cBills.length === 1 ? "" : "s"}</div>
+              <button className="edit-btn" style={{ marginTop: 10 }} onClick={() => setLedger(name)}>Full Ledger</button>
             </div>
           );
         }) : <div className="card card-pad"><div className="empty">No settled bills yet.</div></div>
@@ -470,12 +569,29 @@ function StaffLedger({ branchId, shared }: { branchId: string; shared: SharedPro
           </div>
         </Modal>
       )}
-      {ledger && <LedgerModal branchId={branchId} name={ledger} onClose={() => setLedger(null)} onSync={shared.onSync} />}
     </>
   );
 }
 
 /* ---------- Sale (New Bill / Previous Bills) ---------- */
+/* Wrapper owning the "New Bill" / "Previous Bills" in-page toggle — the
+ * Billing tab always lands on New Bill by default; Previous is one tap away
+ * via this segmented control instead of needing the hamburger menu. */
+function BillingScreen({ branchId, shared, branchName }: { branchId: string; shared: SharedProps; branchName: string }) {
+  const [view, setView] = useState<"new" | "previous">("new");
+  return (
+    <>
+      <div className="seg" style={{ marginBottom: 14 }}>
+        <button className={view === "new" ? "active" : ""} onClick={() => setView("new")}>New Bill</button>
+        <button className={view === "previous" ? "active" : ""} onClick={() => setView("previous")}>Previous Bills</button>
+      </div>
+      {view === "new"
+        ? <NewBillForm branchId={branchId} shared={shared} branchName={branchName} />
+        : <PreviousBills branchId={branchId} shared={shared} branchName={branchName} />}
+    </>
+  );
+}
+
 type DiscType = "none" | "5" | "10" | "custom" | "flat";
 // price = per-piece price (used for the pcs portion). boxPrice = independent
 // box price (used for the box portion) — falls back to perBox × price when
@@ -493,6 +609,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
 
   // Customer — dropdown of saved customers, still free text for new ones.
   const [cust, setCust] = useState("");
+  const [custPhone, setCustPhone] = useState("");
   const [showCustDd, setShowCustDd] = useState(false);
   const custMatches = customers.filter((c) => c.name.toLowerCase().includes(cust.trim().toLowerCase())).slice(0, 8);
 
@@ -573,7 +690,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
     : Math.max(0, Number(partialAmt) || 0);
   const dueNow = Math.max(0, cartTotal - amountPaidNow);
 
-  const save = async () => {
+  const save = async (shareAfter = false) => {
     if (!cart.length) return toast("Add at least one item");
     if (cart.some((c) => c.qty <= 0)) return toast("Every item needs a quantity greater than 0");
     if (payMode === "both" && (Number(cashAmt) || 0) + (Number(upiAmt) || 0) <= 0) {
@@ -597,13 +714,29 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
       return { ...base, discountType: "flat", discountValue: billDiscountAmt };
     });
 
-    const { billNo, due } = await createSaleBill(branchId, shared.profile.id, cust, {
-      mode: payMode, amountPaid: amountPaidNow, cashAmount: finalCash, upiAmount: finalUpi,
-    }, items);
-    setSaving(false);
-    toast(`Bill ${billNo} saved` + (due > 0 ? ` — ${money(due)} due` : "") + (shared.online ? "" : " offline"));
-    setCart([]); setCust(""); setDiscType("none"); setDiscCustom(0); setDiscFlat(0);
-    setPayMode("cash"); setCashAmt(""); setUpiAmt(""); setPaidFull(true); setPartialAmt(""); shared.onSync();
+    try {
+      const { billNo, due } = await createSaleBill(branchId, shared.profile.id, cust, {
+        mode: payMode, amountPaid: amountPaidNow, cashAmount: finalCash, upiAmount: finalUpi,
+      }, items);
+      await ensureCustomer(branchId, cust, custPhone);
+      toast(`Bill ${billNo} saved` + (due > 0 ? ` — ${money(due)} due` : "") + (shared.online ? "" : " offline"));
+
+      if (shareAfter) {
+        const lines = cart.map((c) => `${c.name} x${c.qty} - ${money(lineAmount(c))}`).join("\n");
+        const msg = `*${branchName}*\nBill ${billNo}\nCustomer: ${cust || "Walk-in"}\n\n${lines}\n\n*Grand Total: ${money(cartTotal)}*` + (due > 0 ? `\nDue: ${money(due)}` : "");
+        const phoneDigits = custPhone.replace(/\D/g, "");
+        const waUrl = `https://wa.me/${phoneDigits ? "91" + phoneDigits : ""}?text=${encodeURIComponent(msg)}`;
+        window.open(waUrl, "_blank");
+      }
+
+      setCart([]); setCust(""); setCustPhone(""); setDiscType("none"); setDiscCustom(0); setDiscFlat(0);
+      setPayMode("cash"); setCashAmt(""); setUpiAmt(""); setPaidFull(true); setPartialAmt(""); shared.onSync();
+    } catch (e: any) {
+      console.error("[billing] save failed:", e);
+      toast("Bill NOT saved — " + (e?.message || "please try again"));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -611,14 +744,15 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
       <div className="card card-pad">
         <div style={{ display: "flex", gap: 10 }}>
           <div className="field" style={{ position: "relative", marginBottom: 0, flex: 2 }}>
+            <label>Customer Name</label>
             <input value={cust} onChange={(e) => { setCust(e.target.value); setShowCustDd(true); }}
               onFocus={() => setShowCustDd(true)} onBlur={() => setTimeout(() => setShowCustDd(false), 150)}
-              placeholder="Customer name or mobile" />
+              placeholder="Customer name (or Walk-in)" />
             {showCustDd && custMatches.length > 0 && (
               <div className="card" style={{ position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20, maxHeight: 220, overflowY: "auto", marginTop: 4 }}>
                 {custMatches.map((c) => (
                   <div key={c.id} className="row" style={{ padding: "10px 14px", cursor: "pointer" }}
-                    onMouseDown={() => { setCust(c.name); setShowCustDd(false); }}>
+                    onMouseDown={() => { setCust(c.name); setCustPhone(c.phone || ""); setShowCustDd(false); }}>
                     <div><div className="main">{c.name}</div><div className="sub">{c.phone || "—"}</div></div>
                     {c.balance_due > 0 && <span className="amt out">{money(c.balance_due)} due</span>}
                   </div>
@@ -627,8 +761,13 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
             )}
           </div>
           <div className="field" style={{ marginBottom: 0, flex: 1 }}>
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+            <label>Mobile No.</label>
+            <input value={custPhone} onChange={(e) => setCustPhone(e.target.value)} type="tel" inputMode="numeric" placeholder="98765 43210" />
           </div>
+        </div>
+        <div className="field" style={{ marginBottom: 0, marginTop: 10 }}>
+          <label>Date</label>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
         </div>
         <div className="field" style={{ position: "relative", marginBottom: 0, marginTop: 10 }}>
           <input ref={productInputRef} className="search" style={{ width: "100%" }} value={pq}
@@ -641,7 +780,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
               {pMatches.map((pr, i) => (
                 <div key={pr.id} className="row" style={{ padding: "10px 14px", cursor: "pointer", background: i === pActive ? "var(--surface-2)" : undefined }}
                   onMouseEnter={() => setPActive(i)} onMouseDown={() => addProduct(pr)}>
-                  <div><div className="main">{pr.name}</div><div className="sub">{money(pr.sale_price)}/{pr.unit}{pr.pieces_per_box ? ` · box of ${pr.pieces_per_box} = ${money(pr.box_price || pr.pieces_per_box * pr.sale_price)}` : ""}</div></div>
+                  <div><div className="main">{pr.name}</div><div className="sub">{money(pr.sale_price)}/{pr.unit}{pr.pieces_per_box ? ` · cartoon of ${pr.pieces_per_box} = ${money(pr.box_price || pr.pieces_per_box * pr.sale_price)}` : ""}</div></div>
                 </div>
               ))}
             </div>
@@ -661,7 +800,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ minWidth: 0 }}>
                 <div className="main" style={{ fontWeight: 700 }}>{c.name}</div>
-                <div className="sub">{money(c.price)}/pc{c.perBox ? ` · ${money(effBoxPrice)}/box (${c.perBox} pcs)` : ""}</div>
+                <div className="sub">{money(c.price)}/pc{c.perBox ? ` · ${money(effBoxPrice)}/cartoon (${c.perBox} pcs)` : ""}</div>
               </div>
               <button className="del-btn" style={{ background: "transparent", color: "var(--red)", width: 30, height: 30, flexShrink: 0 }} onClick={() => removeItem(i)}><Icon name="trash" size={16} /></button>
             </div>
@@ -669,7 +808,7 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
               <div style={{ display: "flex", gap: 10 }}>
                 {c.perBox > 0 && (
                   <div>
-                    <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600 }}>BOX</label>
+                    <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600 }}>CARTOON</label>
                     <div className="stepper sm" style={{ marginTop: 2 }}>
                       <button onClick={() => bump(i, "box", -1)}><Icon name="minus" size={12} /></button>
                       <span>{c.box}</span>
@@ -691,6 +830,15 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
           </div>
         );
       }) : <div className="card card-pad"><div className="empty">No items yet. Search a product above to add it.</div></div>}
+
+      {cart.length > 0 && (
+        <button
+          style={{ width: "100%", padding: "12px", border: "1.5px dashed var(--accent)", color: "var(--accent)", borderRadius: 10, background: "transparent", fontWeight: 700, fontSize: 13.5, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 4 }}
+          onClick={() => productInputRef.current?.focus()}
+        >
+          <Icon name="addCircle" size={16} /> Add More Items
+        </button>
+      )}
 
       {cart.length > 0 && (
         <>
@@ -768,8 +916,19 @@ function NewBillForm({ branchId, shared, branchName }: { branchId: string; share
         </>
       )}
 
-      <div className="btn-row" style={{ marginTop: 16, marginBottom: 4 }}>
-        <button className="btn" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={save} disabled={saving || !cart.length}><Icon name="wallet" size={16} /> Save Bill</button>
+      <div className="btn-row" style={{ marginTop: 16, marginBottom: 4, display: "flex", gap: 10 }}>
+        <button
+          style={{ flex: 1, padding: 13, borderRadius: 10, background: "var(--surface)", color: "var(--accent)", border: "1.5px solid var(--accent)", fontWeight: 700, fontSize: 14.5 }}
+          onClick={() => save(false)} disabled={saving || !cart.length}
+        >
+          Save
+        </button>
+        <button
+          className="btn" style={{ flex: 2, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: "var(--green)" }}
+          onClick={() => save(true)} disabled={saving || !cart.length}
+        >
+          <Icon name="whatsapp" size={16} /> Save &amp; Share
+        </button>
       </div>
     </>
   );
@@ -853,104 +1012,324 @@ function PreviousBills({ branchId, shared }: { branchId: string; shared: SharedP
   );
 }
 
-/* ---------- Purchase (professional) ---------- */
+/* ---------- Purchase (multi-item invoice, mirrors NewBillForm's cart pattern) ---------- */
+/* Wrapper owning the "New Purchase" / "Previous Purchases" in-page toggle —
+ * same pattern as BillingScreen above. Purchase tab always lands on New
+ * Purchase by default. */
+function PurchaseScreen({ branchId, shared }: { branchId: string; shared: SharedProps }) {
+  const [view, setView] = useState<"new" | "previous">("new");
+  return (
+    <>
+      <div className="seg" style={{ marginBottom: 14 }}>
+        <button className={view === "new" ? "active" : ""} onClick={() => setView("new")}>New Purchase</button>
+        <button className={view === "previous" ? "active" : ""} onClick={() => setView("previous")}>Previous Purchases</button>
+      </div>
+      {view === "new"
+        ? <PurchaseForm branchId={branchId} shared={shared} />
+        : <PreviousPurchases branchId={branchId} shared={shared} />}
+    </>
+  );
+}
+
+type PurchLine = { product_id: string; name: string; box: number; pcs: number; perBox: number; cost: number; boxCost: number };
+
 function PurchaseForm({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const products = productsForBranch(useLiveQuery(() => localdb.products.toArray(), [], []), branchId);
-  const [pid, setPid] = useState("");
-  const [supplier, setSupplier] = useState("");
-  const [qty, setQty] = useState(1);
-  const [cost, setCost] = useState(0);
-  const [invoiceNo, setInvoiceNo] = useState("");
-  const [pay, setPay] = useState<"cash" | "credit">("cash");
-  const [note, setNote] = useState("");
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const selected = products.find((x) => x.id === pid) ?? products[0];
-  useMemo(() => { if (selected) setCost(selected.cost_price); }, [selected?.id]);
-
-  const allPurch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []))
-    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  const today = rangeStart("today");
-  const todaySpend = sum(allPurch.filter((p) => new Date(p.created_at).getTime() >= today), "total");
+  const allPurch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const suppliers = [...new Set(allPurch.map((p) => p.supplier).filter(Boolean))] as string[];
-  const delPurch = async (id: string) => { if (confirmDel("purchase")) { await softDelete("purchases", id); toast("Deleted"); shared.onSync(); } };
+
+  const [supplier, setSupplier] = useState("");
+  const [invoiceNo, setInvoiceNo] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [saving, setSaving] = useState(false);
+
+  const makeLine = (pr: typeof products[number] | undefined): PurchLine => {
+    const perBox = pr?.pieces_per_box || 0;
+    const boxCost = pr?.box_cost_price || (perBox ? perBox * (pr?.cost_price || 0) : 0);
+    return { product_id: pr?.id || "", name: pr?.name || "", box: 0, pcs: pr ? 1 : 0, perBox, cost: pr?.cost_price || 0, boxCost };
+  };
+
+  const [cart, setCart] = useState<PurchLine[]>(() => products.length ? [makeLine(products[0])] : []);
+
+  const setLine = (i: number, patch: Partial<PurchLine>) => setCart((c) => c.map((x, k) => k === i ? { ...x, ...patch } : x));
+  const changeProduct = (i: number, pid: string) => {
+    const pr = products.find((x) => x.id === pid);
+    setCart((c) => c.map((x, k) => k === i ? { ...makeLine(pr), pcs: x.pcs || 1 } : x));
+  };
+  const bump = (i: number, field: "box" | "pcs", delta: number) => setCart((c) => c.map((x, k) => {
+    if (k !== i) return x;
+    const box = field === "box" ? Math.max(0, x.box + delta) : x.box;
+    const pcs = field === "pcs" ? Math.max(0, x.pcs + delta) : x.pcs;
+    return { ...x, box, pcs };
+  }));
+  const addItem = () => setCart((c) => [...c, makeLine(products[0])]);
+  const removeItem = (i: number) => setCart((c) => c.filter((_, k) => k !== i));
+
+  const lineAmount = (l: PurchLine) => l.box * (l.boxCost || (l.perBox ? l.perBox * l.cost : 0)) + l.pcs * l.cost;
+  const subtotal = cart.reduce((a, l) => a + lineAmount(l), 0);
+
+  // Payment
+  const [pay, setPay] = useState<"cash" | "upi" | "both" | "credit">("cash");
+  const [cashAmt, setCashAmt] = useState<number | "">("");
+  const [upiAmt, setUpiAmt] = useState<number | "">("");
+
+  const paidNow = pay === "credit" ? 0
+    : pay === "both" ? (Number(cashAmt) || 0) + (Number(upiAmt) || 0)
+    : pay === "cash" ? (Number(cashAmt) || 0)
+    : (Number(upiAmt) || 0);
+  const pending = Math.max(0, Math.round((subtotal - paidNow) * 100) / 100);
+
+  const reset = () => {
+    setCart(products.length ? [makeLine(products[0])] : []);
+    setSupplier(""); setInvoiceNo(""); setPay("cash"); setCashAmt(""); setUpiAmt("");
+    setDate(new Date().toISOString().slice(0, 10));
+  };
 
   const save = async () => {
-    if (!selected) return toast("No products for this branch");
-    if (!supplier.trim()) return toast("Enter supplier / company");
-    if (!qty || qty < 1) return toast("Enter a valid quantity");
-    await createPurchase(branchId, shared.profile.id, {
-      productId: selected.id, productName: selected.name, supplier, qty, cost,
-      invoiceNo, paymentMode: pay, note, date,
-    });
-    toast("Purchase saved" + (shared.online ? "" : " offline"));
-    setQty(1); setInvoiceNo(""); setNote(""); shared.onSync();
+    if (!cart.length) return toast("Add at least one item");
+    if (!supplier.trim()) return toast("Enter company / supplier name");
+    if (cart.some((l) => !l.product_id)) return toast("Choose a product for every item");
+    if (cart.some((l) => l.box * (l.perBox || 0) + l.pcs <= 0)) return toast("Every item needs a quantity greater than 0");
+    if (pay === "both" && (Number(cashAmt) || 0) + (Number(upiAmt) || 0) <= 0) {
+      return toast("Enter the cash and/or UPI amount");
+    }
+    setSaving(true);
+    try {
+      const items = cart.map((l) => {
+        const qty = l.box * (l.perBox || 0) + l.pcs;
+        const effBoxCost = l.boxCost || (l.perBox ? l.perBox * l.cost : 0);
+        return {
+          product_id: l.product_id, product_name: l.name, qty, cost: l.cost,
+          lineTotalOverride: lineAmount(l), boxQty: l.box, pcsQty: l.pcs, boxCost: l.box > 0 ? effBoxCost : undefined,
+        };
+      });
+      const { invoiceNo: inv } = await createPurchaseInvoice(branchId, shared.profile.id, supplier, invoiceNo, {
+        mode: pay, amountPaid: paidNow,
+        cashAmount: pay === "both" ? Number(cashAmt) || 0 : undefined,
+        upiAmount: pay === "both" ? Number(upiAmt) || 0 : undefined,
+      }, items);
+      toast(`Purchase ${inv} saved` + (pending > 0 ? ` — ${money(pending)} pending` : "") + (shared.online ? "" : " offline"));
+      reset(); shared.onSync();
+    } catch (e: any) {
+      console.error("[purchase] save failed:", e);
+      toast("Purchase NOT saved — " + (e?.message || "please try again"));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 14 }}>
-        <div>
-          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--muted)", fontWeight: 700 }}>Inventory Entry</span>
-          <h1 className="page-title" style={{ fontSize: 24, margin: "2px 0 0" }}>New Purchase</h1>
-        </div>
-        <div style={{ background: "var(--accent-soft)", color: "var(--accent)", padding: "8px 14px", borderRadius: 12, textAlign: "right" }}>
-          <div style={{ fontSize: 11, opacity: .85 }}>Computed Total</div>
-          <div style={{ fontSize: 17, fontWeight: 700 }}>{money((qty || 0) * (cost || 0))}</div>
-        </div>
-      </div>
-      <div className="card card-pad"><div className="form-grid">
+      <div className="card card-pad">
         <div className="qty-row">
-          <div className="field"><label>Supplier Name</label>
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Company Name</label>
             <input list="sup-list" value={supplier} onChange={(e) => setSupplier(e.target.value)} placeholder="Search supplier…" />
             <datalist id="sup-list">{suppliers.map((s) => <option key={s} value={s} />)}</datalist>
           </div>
-          <div className="field"><label>Invoice #</label><input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="INV-0000" /></div>
-        </div>
-        <div className="field"><label>Product Picker</label>
-          <select value={selected?.id ?? ""} onChange={(e) => { setPid(e.target.value); const pr = products.find((x) => x.id === e.target.value); if (pr) setCost(pr.cost_price); }}>
-            {products.length ? products.map((pr) => <option key={pr.id} value={pr.id}>{pr.name} — cost {money(pr.cost_price)}</option>) : <option>No products — owner must add first</option>}
-          </select>
-        </div>
-        <div className="qty-row">
-          <div className="field"><label>Quantity</label>
-            <div className="stepper">
-              <button onClick={() => setQty((v) => Math.max(1, v - 1))}><Icon name="minus" size={15} /></button>
-              <span>{qty}</span>
-              <button onClick={() => setQty((v) => v + 1)}><Icon name="plus" size={15} /></button>
-            </div>
-          </div>
-          <div className="field"><label>Cost per Unit</label><input type="number" inputMode="numeric" value={cost} onChange={(e) => setCost(+e.target.value)} /></div>
-        </div>
-        <div className="field"><label>Date</label><input type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
-        <div className="field"><label>Payment Method</label>
-          <div className="pay-select">
-            {(["cash", "credit"] as const).map((m) => <button key={m} className={"pay-opt" + (pay === m ? " active" : "")} onClick={() => setPay(m)}>{m === "credit" ? "Credit" : "Cash"}</button>)}
+          <div className="field" style={{ marginBottom: 0 }}>
+            <label>Invoice No.</label>
+            <input value={invoiceNo} onChange={(e) => setInvoiceNo(e.target.value)} placeholder="Auto-generated if blank" />
           </div>
         </div>
-        <div className="field"><label>Note (optional)</label><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. damaged 2 pcs" /></div>
-        <button className="btn" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={save}><Icon name="cart" size={17} /> Add Purchase Record</button>
-      </div></div>
-
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "18px 0 8px" }}>
-        <h3 style={{ fontSize: 16, margin: 0 }}>Recent Purchases</h3>
-        <span style={{ fontSize: 11, background: "var(--surface-4)", color: "var(--muted)", padding: "4px 10px", borderRadius: 999, fontWeight: 600 }}>Today: {money(todaySpend)}</span>
+        <div className="field" style={{ marginBottom: 0, marginTop: 10 }}>
+          <label>Date</label>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
       </div>
-      {allPurch.length ? allPurch.slice(0, 20).map((x) => (
-        <div className="card card-pad" key={x.id} style={{ marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 44, height: 44, borderRadius: 10, background: "var(--surface-3)", color: "var(--accent)", display: "grid", placeItems: "center" }}><Icon name="cart" size={18} /></div>
-            <div><div className="main">{x.product_name}</div><div className="sub">{x.supplier || "—"} · {dateStr(x.created_at)}{x.invoice_no ? " · #" + x.invoice_no : ""}</div></div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ textAlign: "right" }}>
-              <div className="amt out">{money(x.total)}</div>
-              <div className="sub">{(x.payment_mode || "cash") === "credit" ? "CREDIT" : "PAID"}{x._synced === 0 ? " · ⏳" : ""}</div>
+
+      <h3 style={{ fontSize: 14, color: "var(--muted)", margin: "18px 0 8px" }}>Items{cart.length ? ` (${cart.length})` : ""}</h3>
+      {cart.length ? cart.map((l, i) => {
+        const lt = lineAmount(l);
+        const effBoxCost = l.boxCost || (l.perBox ? l.perBox * l.cost : 0);
+        return (
+          <div className="card card-pad" key={i} style={{ marginBottom: 10, boxShadow: "var(--shadow)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <div className="field" style={{ marginBottom: 0, flex: 1 }}>
+                <select value={l.product_id} onChange={(e) => changeProduct(i, e.target.value)}>
+                  {products.length ? products.map((pr) => <option key={pr.id} value={pr.id}>{pr.name}</option>) : <option value="">No products — owner must add first</option>}
+                </select>
+              </div>
+              <button className="del-btn" style={{ background: "transparent", color: "var(--red)", width: 30, height: 30, flexShrink: 0 }} onClick={() => removeItem(i)}><Icon name="trash" size={16} /></button>
             </div>
-            <button className="del-btn" onClick={() => delPurch(x.id)}><Icon name="trash" size={13} /></button>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12, gap: 10, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 10 }}>
+                {l.perBox > 0 && (
+                  <div>
+                    <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600 }}>CARTOON</label>
+                    <div className="stepper sm" style={{ marginTop: 2 }}>
+                      <button onClick={() => bump(i, "box", -1)}><Icon name="minus" size={12} /></button>
+                      <span>{l.box}</span>
+                      <button onClick={() => bump(i, "box", 1)}><Icon name="plus" size={12} /></button>
+                    </div>
+                  </div>
+                )}
+                <div>
+                  <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600 }}>PCS</label>
+                  <div className="stepper sm" style={{ marginTop: 2 }}>
+                    <button onClick={() => bump(i, "pcs", -1)}><Icon name="minus" size={12} /></button>
+                    <span>{l.pcs}</span>
+                    <button onClick={() => bump(i, "pcs", 1)}><Icon name="plus" size={12} /></button>
+                  </div>
+                </div>
+                <div className="field" style={{ marginBottom: 0, width: 100 }}>
+                  <label style={{ fontSize: 10, color: "var(--muted)", fontWeight: 600 }}>COST/PC</label>
+                  <input type="number" inputMode="numeric" value={l.cost} onChange={(e) => setLine(i, { cost: +e.target.value })} style={{ padding: "6px 8px", fontSize: 13 }} />
+                </div>
+              </div>
+              <b style={{ fontSize: 16, color: "var(--accent)", flexShrink: 0 }}>{money(lt)}</b>
+            </div>
+            {l.perBox > 0 && <div className="sub" style={{ marginTop: 6 }}>Cartoon of {l.perBox} = {money(effBoxCost)}</div>}
+          </div>
+        );
+      }) : <div className="card card-pad"><div className="empty">No items yet. Add an item below.</div></div>}
+
+      <button
+        style={{ width: "100%", padding: "12px", border: "1.5px dashed var(--accent)", color: "var(--accent)", borderRadius: 10, background: "transparent", fontWeight: 700, fontSize: 13.5, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginBottom: 4 }}
+        onClick={addItem} disabled={!products.length}
+      >
+        <Icon name="addCircle" size={16} /> Add Item
+      </button>
+
+      {/* Payment Details */}
+      <div style={{ marginTop: 16 }}>
+        <h3 style={{ fontSize: 13, color: "var(--muted)", margin: "0 0 8px" }}>Payment Details</h3>
+        <div className="card card-pad">
+          <div className="row" style={{ padding: "6px 0" }}><span className="sub">Subtotal</span><b>{money(subtotal)}</b></div>
+          <div className="pay-select" style={{ marginTop: 8, marginBottom: 10 }}>
+            {(["cash", "upi", "both", "credit"] as const).map((m) => (
+              <button key={m} className={"pay-opt" + (pay === m ? " active" : "")} onClick={() => setPay(m)}>
+                {m === "both" ? "Split" : m === "credit" ? "Credit" : m.toUpperCase()}
+              </button>
+            ))}
+          </div>
+          {pay !== "credit" && (
+            <div className="qty-row">
+              <div className="field"><label>Cash Paid (₹)</label><input type="number" inputMode="numeric" value={cashAmt} onChange={(e) => setCashAmt(e.target.value === "" ? "" : +e.target.value)} disabled={pay === "upi"} /></div>
+              <div className="field"><label>UPI Paid (₹)</label><input type="number" inputMode="numeric" value={upiAmt} onChange={(e) => setUpiAmt(e.target.value === "" ? "" : +e.target.value)} disabled={pay === "cash"} /></div>
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, paddingTop: 10, borderTop: "1px dashed var(--line)" }}>
+            <span style={{ fontSize: 12, color: "var(--muted)" }}>Total Pending</span>
+            <b style={{ fontFamily: "monospace", fontSize: 14, color: pending > 0 ? "var(--red)" : "var(--green)" }}>{money(pending)}</b>
           </div>
         </div>
-      )) : <div className="card card-pad"><div className="empty">No purchases yet.</div></div>}
+      </div>
+
+      <button className="btn" style={{ width: "100%", marginTop: 16, marginBottom: 4, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+        onClick={save} disabled={saving || !cart.length}>
+        <Icon name="cart" size={17} /> Save Purchase
+      </button>
     </>
+  );
+}
+
+/* Previous Purchases — past purchases for this branch, grouped by invoice_no
+ * (fallback to id if null), mirroring PreviousBills' grouping-by-bill_no. */
+type PurchGroup = { invoiceNo: string; items: Purchase[]; total: number; supplier: string; date: string; pay: string };
+
+function PreviousPurchases({ branchId, shared }: { branchId: string; shared: SharedProps }) {
+  const purchases = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
+  const [q, setQ] = useState("");
+  const [view, setView] = useState<PurchGroup | null>(null);
+  const [editGroup, setEditGroup] = useState<PurchGroup | null>(null);
+
+  const groups = useMemo(() => {
+    const map = new Map<string, PurchGroup>();
+    for (const p of purchases) {
+      const key = p.invoice_no || p.id;
+      if (!map.has(key)) map.set(key, { invoiceNo: key, items: [], total: 0, supplier: p.supplier || "—", date: p.created_at, pay: p.payment_mode || "cash" });
+      const g = map.get(key)!;
+      g.items.push(p);
+      g.total += p.total;
+    }
+    return [...map.values()]
+      .filter((g) => g.invoiceNo.toLowerCase().includes(q.toLowerCase()) || g.supplier.toLowerCase().includes(q.toLowerCase()))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [purchases, q]);
+
+  const doDelete = async (g: PurchGroup) => {
+    if (!window.confirm(`Delete purchase ${g.invoiceNo}? It can be restored by the owner.`)) return;
+    for (const it of g.items) await softDelete("purchases", it.id);
+    toast("Purchase deleted"); shared.onSync();
+  };
+
+  return (
+    <>
+      <div className="card">
+        <div className="card-head"><h3>Previous purchases</h3><input className="search" placeholder="Search invoice # or supplier…" value={q} onChange={(e) => setQ(e.target.value)} /></div>
+        <div className="card-pad" style={{ paddingTop: 6 }}>
+          {groups.length ? groups.map((g) => (
+            <div className="row" key={g.invoiceNo} style={{ cursor: "pointer" }} onClick={() => setView(g)}>
+              <div>
+                <div className="main">#{g.invoiceNo}</div>
+                <div className="sub">{g.supplier} · {dateStr(g.date)} · {g.items.length} item{g.items.length === 1 ? "" : "s"} · {g.pay.toUpperCase()}</div>
+              </div>
+              <b className="amt out">{money(g.total)}</b>
+            </div>
+          )) : <div className="empty">No purchases yet.</div>}
+        </div>
+      </div>
+
+      {view && <PurchaseInvoiceModal group={view} onClose={() => setView(null)}
+        onEdit={() => { setEditGroup(view); setView(null); }}
+        onDelete={() => { doDelete(view); setView(null); }} />}
+
+      {editGroup && <EditPurchaseGroupModal group={editGroup} onClose={() => setEditGroup(null)} onSync={shared.onSync} />}
+    </>
+  );
+}
+
+/** Read-only itemized purchase invoice preview — explicitly labeled as a
+ *  PURCHASE (not a sale/bill) so staff never confuse it with a sales bill
+ *  when looking at history. Mirrors Owner.tsx's BillInvoiceModal structure,
+ *  adapted for supplier/cost instead of customer/price. */
+function PurchaseInvoiceModal({ group, onClose, onEdit, onDelete }: { group: PurchGroup; onClose: () => void; onEdit: () => void; onDelete: () => void }) {
+  return (
+    <Modal title={`Purchase Invoice #${group.invoiceNo}`} onClose={onClose}>
+      <div className="form-grid">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ background: "var(--red-soft)", color: "var(--red)", fontSize: 11, fontWeight: 800, letterSpacing: ".5px", padding: "3px 10px", borderRadius: 999 }}>PURCHASE</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "var(--muted)" }}>
+          <span>{group.supplier}</span><span>{dateStr(group.date)} · {timeStr(group.date)}</span>
+        </div>
+        <div style={{ fontSize: 12.5, color: "var(--muted)" }}>Payment: {group.pay.toUpperCase()}</div>
+        <div style={{ border: "1px solid var(--line)", borderRadius: 10, overflow: "hidden", marginTop: 4 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "var(--surface-2)" }}>
+                <th style={{ textAlign: "left", padding: "8px 10px", fontSize: 12 }}>Item</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 12 }}>Qty</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 12 }}>Cost</th>
+                <th style={{ textAlign: "right", padding: "8px 10px", fontSize: 12 }}>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {group.items.map((p) => (
+                <tr key={p.id} style={{ borderTop: "1px solid var(--line-2)" }}>
+                  <td style={{ padding: "8px 10px" }}>
+                    {p.product_name}
+                    {(p.box_qty || p.pcs_qty) ? <div style={{ fontSize: 11, color: "var(--faint)" }}>{p.box_qty ? `${p.box_qty} cartoon` : ""}{p.box_qty && p.pcs_qty ? " + " : ""}{p.pcs_qty ? `${p.pcs_qty} pcs` : ""}</div> : null}
+                  </td>
+                  <td style={{ textAlign: "right", padding: "8px 10px" }}>{p.qty}</td>
+                  <td style={{ textAlign: "right", padding: "8px 10px" }}>{money(p.cost)}</td>
+                  <td style={{ textAlign: "right", padding: "8px 10px", fontWeight: 700 }}>{money(p.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="row" style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+          <b>Grand Total</b><b style={{ color: "var(--accent)" }}>{money(group.total)}</b>
+        </div>
+        <div className="btn-row">
+          <button className="btn ghost" onClick={onClose}>Close</button>
+          <button className="btn" onClick={onEdit}>Edit</button>
+          <button className="btn" style={{ background: "var(--red)" }} onClick={onDelete}>Delete</button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -958,26 +1337,43 @@ function PurchaseForm({ branchId, shared }: { branchId: string; shared: SharedPr
 /* Unpaid Bills — grouped by customer, due date per bill, per-bill and
  * per-customer "add payment" (per-customer auto-splits oldest-first across
  * that customer's unpaid bills, same as the Ledger's settle flow). */
+type UnpaidSort = "date" | "amount" | "name";
+
 function UnpaidBills({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const bills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []))
-    .filter((b) => b.status === "unpaid")
-    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()); // oldest first within each customer group
+    .filter((b) => b.status === "unpaid");
   const customers = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const due = sum(bills, "due_amount");
 
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState(""); const [amount, setAmount] = useState(0); const [paidNow, setPaidNow] = useState(0); const [dueDate, setDueDate] = useState("");
-  const [payFor, setPayFor] = useState<BillT | null>(null); const [payAmt, setPayAmt] = useState(0);
+  const [payFor, setPayFor] = useState<BillT | null>(null);
+  const [payMode, setPayMode] = useState<"cash" | "upi" | "both">("cash");
+  const [payCash, setPayCash] = useState<number | "">(""); const [payUpi, setPayUpi] = useState<number | "">("");
   const [editBill, setEditBill] = useState<BillT | null>(null);
   const [settleFor, setSettleFor] = useState<string | null>(null); const [settleAmt, setSettleAmt] = useState<number | "">("");
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const toggle = (n: string) => setExpanded((s) => { const nx = new Set(s); nx.has(n) ? nx.delete(n) : nx.add(n); return nx; });
+  const [showSettlePicker, setShowSettlePicker] = useState(false);
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useState<UnpaidSort>("date");
 
   const groups = useMemo(() => {
     const map = new Map<string, BillT[]>();
     for (const b of bills) { const k = b.customer_name; if (!map.has(k)) map.set(k, []); map.get(k)!.push(b); }
     return [...map.entries()].map(([cust, list]) => ({ cust, list, total: sum(list, "due_amount") })).sort((a, b) => b.total - a.total);
   }, [bills]);
+
+  // Flat per-bill list for the mockup's card layout — searchable by customer
+  // name or bill #, sortable by oldest-first / highest-amount / name A-Z.
+  const flatBills = useMemo(() => {
+    let rows = bills.filter((b) =>
+      !q.trim() || b.customer_name.toLowerCase().includes(q.toLowerCase()) || (b.bill_no || "").toLowerCase().includes(q.toLowerCase()));
+    rows = [...rows].sort((a, b) => {
+      if (sort === "amount") return b.due_amount - a.due_amount;
+      if (sort === "name") return a.customer_name.localeCompare(b.customer_name);
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime(); // oldest first
+    });
+    return rows;
+  }, [bills, q, sort]);
 
   const saveBill = async () => {
     if (!name.trim()) return toast("Enter customer name");
@@ -986,12 +1382,18 @@ function UnpaidBills({ branchId, shared }: { branchId: string; shared: SharedPro
     toast("Bill saved" + (shared.online ? "" : " offline"));
     setShowNew(false); setName(""); setAmount(0); setPaidNow(0); setDueDate(""); shared.onSync();
   };
+  const payTotal = payMode === "both" ? (Number(payCash) || 0) + (Number(payUpi) || 0)
+    : payMode === "cash" ? (Number(payCash) || 0) : (Number(payUpi) || 0);
   const savePay = async () => {
     if (!payFor) return;
-    if (!payAmt || payAmt <= 0) return toast("Enter amount");
-    await recordPayment(payFor, Number(payAmt));
+    if (!payTotal || payTotal <= 0) return toast("Enter amount");
+    await recordBillPayment(branchId, shared.profile.id, payFor, {
+      amount: payTotal, mode: payMode,
+      cashAmount: payMode === "both" ? Number(payCash) || 0 : undefined,
+      upiAmount: payMode === "both" ? Number(payUpi) || 0 : undefined,
+    });
     toast("Payment recorded" + (shared.online ? "" : " offline"));
-    setPayFor(null); setPayAmt(0); shared.onSync();
+    setPayFor(null); setPayMode("cash"); setPayCash(""); setPayUpi(""); shared.onSync();
   };
   const doSettle = async () => {
     if (!settleFor) return;
@@ -1020,66 +1422,75 @@ function UnpaidBills({ branchId, shared }: { branchId: string; shared: SharedPro
 
   return (
     <>
-      <div className="bento" style={{ marginBottom: 14 }}>
-        <div className="glass-card" style={{ borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 88 }}>
-          <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5, fontWeight: 600 }}><Icon name="wallet" size={15} /> Total Due</span>
-          <div><div style={{ fontSize: 20, fontWeight: 800, color: "var(--accent)" }}>{money(due)}</div></div>
-        </div>
-        <div className="glass-card" style={{ borderRadius: 14, padding: 14, display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 88 }}>
-          <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 5, fontWeight: 600 }}><Icon name="bill" size={15} /> Open Bills</span>
-          <div style={{ fontSize: 20, fontWeight: 800 }}>{bills.length}</div>
+      {/* Total Outstanding hero card */}
+      <div className="card card-pad" style={{ marginBottom: 14, position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", right: -20, top: -20, opacity: 0.08, color: "var(--red)" }}><Icon name="wallet" size={100} /></div>
+        <div style={{ position: "relative" }}>
+          <span style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", fontWeight: 700 }}>Total Outstanding</span>
+          <div style={{ fontSize: 28, lineHeight: "36px", fontWeight: 800, color: "var(--red)", marginTop: 2 }}>{money(due)}</div>
+          <div style={{ fontSize: 12, color: "var(--faint)", marginTop: 2 }}>Across {bills.length} pending bill{bills.length === 1 ? "" : "s"}</div>
         </div>
       </div>
 
-      <button className="edit-btn" style={{ marginBottom: 12 }} onClick={exportStatement}>Export statement</button>
+      {/* Search + sort */}
+      <div className="field" style={{ position: "relative", marginBottom: 10 }}>
+        <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={17} /></span>
+        <input style={{ paddingLeft: 38, height: 48, borderRadius: 12 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customer or bill no…" />
+      </div>
+      <div style={{ display: "flex", gap: 6, overflowX: "auto", marginBottom: 14, paddingBottom: 2 }}>
+        {([["date", "Date (Oldest)"], ["amount", "Amount (Highest)"], ["name", "Name A-Z"]] as [UnpaidSort, string][]).map(([s, label]) => (
+          <button key={s} className={"pay-opt" + (sort === s ? " active" : "")} style={{ flexShrink: 0, width: "auto", padding: "8px 16px" }} onClick={() => setSort(s)}>{label}</button>
+        ))}
+      </div>
 
-      {groups.length ? groups.map((g) => {
-        const isOpen = expanded.has(g.cust);
+      <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <button className="edit-btn" onClick={exportStatement}>Export statement</button>
+        {groups.length > 0 && (
+          <button className="edit-btn" onClick={() => setShowSettlePicker(true)}>Settle a customer</button>
+        )}
+      </div>
+
+      {flatBills.length ? flatBills.map((b) => {
+        const overdue = !!(b.due_date && new Date(b.due_date).getTime() < Date.now());
         return (
-          <div className="card" key={g.cust} style={{ marginBottom: 10, overflow: "hidden" }}>
-            <div style={{ padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }} onClick={() => toggle(g.cust)}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ width: 44, height: 44, borderRadius: "50%", background: "var(--surface-4)", color: "var(--accent)", display: "grid", placeItems: "center", fontWeight: 800 }}>{g.cust.split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase()}</div>
-                <div><div className="main" style={{ fontWeight: 700 }}>{g.cust}</div><div className="sub">{g.list.length} bill{g.list.length === 1 ? "" : "s"} due</div></div>
+          <div className="card card-pad" key={b.id} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 16 }}>{b.customer_name}</div>
+                <div className="sub">{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"}{b._synced === 0 ? " · ⏳" : ""}</div>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div className="amt out" style={{ fontSize: 15 }}>{money(g.total)}</div>
-                <button className="btn" style={{ width: "auto", padding: "8px 16px", borderRadius: 10, fontSize: 13 }} onClick={(e) => { e.stopPropagation(); setSettleFor(g.cust); setSettleAmt(g.total); }}>Pay</button>
-                <span style={{ color: "var(--faint)", transform: isOpen ? "rotate(180deg)" : undefined, transition: "transform .15s" }}><Icon name="chevronDown" size={18} /></span>
+              <span style={{
+                flexShrink: 0, fontSize: 11, fontWeight: 800, padding: "4px 8px", borderRadius: 4, display: "flex", alignItems: "center", gap: 4,
+                background: overdue ? "var(--red-soft)" : "var(--surface-4)", color: overdue ? "var(--red)" : "var(--muted)",
+              }}>
+                {overdue && <Icon name="warning" size={13} />}{overdue ? "Overdue" : "Pending"}
+              </span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
+              <div>
+                <div style={{ fontSize: 11, color: "var(--faint)" }}>Date</div>
+                <div style={{ fontSize: 13.5, color: "var(--muted)" }}>{dateStr(b.created_at)}</div>
+                {b.due_date && <div style={{ fontSize: 11.5, color: overdue ? "var(--red)" : "var(--muted)", fontWeight: overdue ? 700 : 400 }}>Due {dateStr(b.due_date)}</div>}
+              </div>
+              <div style={{ textAlign: "right" }}>
+                <div style={{ fontSize: 11, color: "var(--faint)" }}>Remaining Balance</div>
+                <div style={{ fontSize: 18, fontWeight: 800, color: "var(--red)" }}>{money(b.due_amount)}</div>
               </div>
             </div>
-            {isOpen && (
-              <div style={{ padding: "0 14px 14px", display: "flex", flexDirection: "column", gap: 8 }}>
-                {g.list.map((b) => {
-                  const overdue = b.due_date && new Date(b.due_date).getTime() < Date.now();
-                  return (
-                    <div key={b.id} className="card card-pad" style={{ background: "var(--surface-2)" }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                        <div><div style={{ fontWeight: 700, fontSize: 13 }}>{b.bill_no ? `Bill #${b.bill_no}` : "Udhaar bill"}</div>
-                          <div className="sub">{dateStr(b.created_at)}{b._synced === 0 ? " · ⏳" : ""}</div>
-                          {b.due_date && <div className="sub" style={{ color: overdue ? "var(--red)" : "var(--muted)", fontWeight: overdue ? 700 : 400 }}>Due {dateStr(b.due_date)}{overdue ? " · overdue" : ""}</div>}
-                        </div>
-                        <div style={{ textAlign: "right" }}>
-                          <div style={{ fontSize: 10, textTransform: "uppercase", color: "var(--muted)" }}>Paid / Total</div>
-                          <div style={{ fontWeight: 700, fontSize: 13 }}>{money(b.paid)} / {money(b.amount)}</div>
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, paddingTop: 8, borderTop: "1px dashed var(--line)" }}>
-                        <span style={{ color: "var(--red)", fontWeight: 800, fontSize: 15 }}>{money(b.due_amount)}</span>
-                        <div style={{ display: "flex", gap: 6 }}>
-                          <button className="icon-btn" style={{ background: "var(--surface)", width: 32, height: 32 }} onClick={() => setEditBill(b)}><Icon name="settings" size={14} /></button>
-                          <button className="icon-btn" style={{ background: "var(--surface)", width: 32, height: 32, color: "var(--red)" }} onClick={() => doVoid(b)}><Icon name="close" size={14} /></button>
-                          <button className="btn" style={{ width: "auto", padding: "7px 14px", borderRadius: 999, fontSize: 12.5 }} onClick={() => { setPayFor(b); setPayAmt(b.due_amount); }}>Pay</button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+            <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+              <button className="icon-btn" style={{ background: "var(--surface-2)", width: 36, height: 36 }} onClick={() => setEditBill(b)}><Icon name="settings" size={14} /></button>
+              <button className="icon-btn" style={{ background: "var(--surface-2)", width: 36, height: 36, color: "var(--red)" }} onClick={() => doVoid(b)}><Icon name="close" size={14} /></button>
+              <button
+                className="btn" style={{ flex: 1, padding: 12, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontWeight: 700 }}
+                onClick={() => { setPayFor(b); setPayMode("cash"); setPayCash(b.due_amount); setPayUpi(""); }}
+              >
+                <Icon name="wallet" size={16} /> Pay Now
+              </button>
+            </div>
           </div>
         );
       }) : <div className="card card-pad"><div className="empty">No unpaid bills. All clear!</div></div>}
+      {flatBills.length > 0 && <div style={{ textAlign: "center", color: "var(--faint)", fontSize: 12, padding: "10px 0 4px" }}>End of pending bills</div>}
 
       <button className="fab" onClick={() => setShowNew(true)}><Icon name="plus" size={18} /> New Bill</button>
 
@@ -1104,8 +1515,32 @@ function UnpaidBills({ branchId, shared }: { branchId: string; shared: SharedPro
         <Modal title={`Payment — ${payFor.customer_name}`} onClose={() => setPayFor(null)}>
           <div className="form-grid">
             <p style={{ margin: 0, color: "var(--muted)", fontSize: 14 }}>Outstanding: <b style={{ color: "var(--red)" }}>{money(payFor.due_amount)}</b></p>
-            <div className="field"><label>Amount received</label><input type="number" inputMode="numeric" value={payAmt || ""} onChange={(e) => setPayAmt(+e.target.value)} /></div>
+            <div className="pay-select">
+              {(["cash", "upi", "both"] as const).map((m) => (
+                <button key={m} className={"pay-opt" + (payMode === m ? " active" : "")} onClick={() => setPayMode(m)}>
+                  {m === "both" ? "Split" : m.toUpperCase()}
+                </button>
+              ))}
+            </div>
+            <div className="qty-row">
+              <div className="field"><label>Cash (₹)</label><input type="number" inputMode="numeric" value={payCash} onChange={(e) => setPayCash(e.target.value === "" ? "" : +e.target.value)} disabled={payMode === "upi"} /></div>
+              <div className="field"><label>UPI (₹)</label><input type="number" inputMode="numeric" value={payUpi} onChange={(e) => setPayUpi(e.target.value === "" ? "" : +e.target.value)} disabled={payMode === "cash"} /></div>
+            </div>
+            <div className="total-preview">Total: {money(payTotal)}</div>
             <div className="btn-row"><button className="btn ghost" onClick={() => setPayFor(null)}>Cancel</button><button className="btn" onClick={savePay}>Record payment</button></div>
+          </div>
+        </Modal>
+      )}
+      {showSettlePicker && (
+        <Modal title="Settle a customer" onClose={() => setShowSettlePicker(false)}>
+          <div className="form-grid">
+            {groups.map((g) => (
+              <div key={g.cust} className="row" style={{ cursor: "pointer" }}
+                onClick={() => { setSettleFor(g.cust); setSettleAmt(g.total); setShowSettlePicker(false); }}>
+                <div><div className="main">{g.cust}</div><div className="sub">{g.list.length} bill{g.list.length === 1 ? "" : "s"} due</div></div>
+                <b className="amt out">{money(g.total)}</b>
+              </div>
+            ))}
           </div>
         </Modal>
       )}
@@ -1133,65 +1568,93 @@ function UnpaidBills({ branchId, shared }: { branchId: string; shared: SharedPro
     </>
   );
 }
+/** Simple name+phone-only edit — deliberately does NOT expose balance_due
+ *  (that stays an owner-level correction via Owner.tsx's EditCustomerModal).
+ *  Toggling active/inactive is separate (a plain switch on the card, not
+ *  part of this modal). */
+function EditCustomerNamePhoneModal({ customer, onClose, onSync }: { customer: import("../lib/types").Customer; onClose: () => void; onSync: () => void }) {
+  const [name, setName] = useState(customer.name);
+  const [phone, setPhone] = useState(customer.phone || "");
+  const save = async () => {
+    if (!name.trim()) return toast("Enter a name");
+    await saveEdit("customers", { ...customer, name: name.trim(), phone: phone.trim() || null });
+    toast("Customer updated"); onClose(); onSync();
+  };
+  return (
+    <Modal title="Edit customer" onClose={onClose}>
+      <div className="form-grid">
+        <div className="field"><label>Name</label><input value={name} onChange={(e) => setName(e.target.value)} /></div>
+        <div className="field"><label>Phone</label><input value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+        <div className="btn-row"><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn" onClick={save}>Save</button></div>
+      </div>
+    </Modal>
+  );
+}
+
 function Customers({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const cust = live(useLiveQuery(() => localdb.customers.where("branch_id").equals(branchId).toArray(), [branchId], []));
   const [show, setShow] = useState(false);
-  const [ledger, setLedger] = useState<string | null>(null);
   const [editC, setEditC] = useState<any>(null);
   const [name, setName] = useState(""); const [phone, setPhone] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "active" | "inactive">("all");
   const save = async () => {
     if (!name.trim()) return toast("Enter customer name");
     await addCustomer(branchId, name, phone);
     toast("Customer added" + (shared.online ? "" : " offline"));
     setShow(false); setName(""); setPhone(""); shared.onSync();
   };
-  const delCust = async (id: string) => { if (confirmDel("customer")) { await softDelete("customers", id); toast("Deleted"); shared.onSync(); } };
+  const toggleActive = async (c: any) => { await setCustomerActive(c, !(c.active ?? true)); shared.onSync(); };
   const [q, setQ] = useState("");
-  const rows = cust.filter((c) => c.name.toLowerCase().includes(q.toLowerCase()) || (c.phone || "").includes(q));
-  const initials = (n: string) => n.split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase();
+  const rows = cust
+    .filter((c) => c.name.toLowerCase().includes(q.toLowerCase()) || (c.phone || "").includes(q))
+    .filter((c) => statusFilter === "all" ? true : statusFilter === "active" ? (c.active ?? true) : !(c.active ?? true));
   return (
     <>
       <div className="field" style={{ position: "relative", marginBottom: 14 }}>
         <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", color: "var(--faint)" }}><Icon name="search" size={17} /></span>
-        <input style={{ paddingLeft: 38, height: 48, borderRadius: 12 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customers by name or phone…" />
+        <input style={{ paddingLeft: 38, height: 48, borderRadius: 12 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search customers…" />
       </div>
-      <div className="bento" style={{ marginBottom: 16 }}>
-        <div style={{ background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
-          <div style={{ fontSize: 10, textTransform: "uppercase", color: "var(--muted)", fontWeight: 700 }}>Total Customers</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "var(--accent)", marginTop: 4 }}>{cust.length}</div>
-        </div>
-        <div style={{ background: "var(--surface-2)", border: "1px solid var(--line)", borderRadius: 12, padding: 12 }}>
-          <div style={{ fontSize: 10, textTransform: "uppercase", color: "var(--muted)", fontWeight: 700 }}>Outstanding</div>
-          <div style={{ fontSize: 22, fontWeight: 800, color: "var(--red)", marginTop: 4 }}>{money(sum(cust, "balance_due"))}</div>
-        </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 16 }}>
+        {(["all", "active", "inactive"] as const).map((f) => (
+          <button key={f} className={"pay-opt" + (statusFilter === f ? " active" : "")} style={{ flex: 1, textTransform: "capitalize" }} onClick={() => setStatusFilter(f)}>{f}</button>
+        ))}
       </div>
 
-      {rows.length ? rows.map((c) => (
-        <div className="card" key={c.id} style={{ marginBottom: 10, overflow: "hidden" }}>
-          <div style={{ padding: 14, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 46, height: 46, borderRadius: "50%", background: c.balance_due > 0 ? "var(--accent-soft)" : "var(--green-soft)", color: c.balance_due > 0 ? "var(--accent)" : "var(--green)", display: "grid", placeItems: "center", fontWeight: 800 }}>{initials(c.name)}</div>
-              <div><div className="main" style={{ fontWeight: 700 }}>{c.name}</div><div className="sub">{c.phone || "—"}{c._synced === 0 ? " · ⏳" : ""}</div></div>
+      {rows.length ? rows.map((c) => {
+        const isActive = c.active ?? true;
+        return (
+          <div className="card card-pad" key={c.id} style={{ marginBottom: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div style={{ fontWeight: 700, fontSize: 16 }}>{c.name}</div>
+              <button className="icon-btn" style={{ width: 32, height: 32 }} onClick={() => setEditC(c)}><Icon name="settings" size={15} /></button>
             </div>
-            <div style={{ textAlign: "right" }}>
-              <span className={"status-pill " + (c.balance_due > 0 ? "warn" : "ok")}>{c.balance_due > 0 ? money(c.balance_due) + " Due" : "Clear"}</span>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, paddingTop: 10, borderTop: "1px solid var(--line-2)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--muted)", fontSize: 14 }}>
+                <Icon name="phone" size={15} />{c.phone || "—"}
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={(e) => e.stopPropagation()}>
+                <span style={{ fontSize: 13, color: isActive ? "var(--text)" : "var(--faint)", fontWeight: 600 }}>{isActive ? "Active" : "Inactive"}</span>
+                <span
+                  onClick={() => toggleActive(c)}
+                  style={{
+                    width: 44, height: 26, borderRadius: 999, background: isActive ? "var(--accent)" : "var(--line)",
+                    position: "relative", transition: "background .15s", flexShrink: 0,
+                  }}
+                >
+                  <span style={{
+                    position: "absolute", top: 3, left: isActive ? 21 : 3, width: 20, height: 20, borderRadius: "50%",
+                    background: "#fff", boxShadow: "var(--shadow)", transition: "left .15s",
+                  }} />
+                </span>
+              </label>
             </div>
           </div>
-          <div style={{ padding: "0 14px 14px", display: "flex", gap: 8 }}>
-            <button className="btn" style={{ flex: 1, padding: "9px 0", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 13.5, background: c.balance_due > 0 ? "var(--accent)" : "var(--surface-4)", color: c.balance_due > 0 ? "#fff" : "var(--muted)" }} onClick={() => setLedger(c.name)}>
-              <Icon name="bill" size={15} /> Ledger
-            </button>
-            <button className="icon-btn" style={{ width: 40, height: 40, border: "1px solid var(--line)", borderRadius: 10 }} onClick={() => setEditC(c)}><Icon name="settings" size={16} /></button>
-            {c.phone && <a className="icon-btn" style={{ width: 40, height: 40, border: "1px solid var(--line)", borderRadius: 10, textDecoration: "none" }} href={`tel:${c.phone}`}><Icon name="phone" size={16} /></a>}
-            <button className="icon-btn" style={{ width: 40, height: 40, border: "1px solid var(--line)", borderRadius: 10, color: "var(--red)" }} onClick={() => delCust(c.id)}><Icon name="trash" size={16} /></button>
-          </div>
-        </div>
-      )) : <div className="card card-pad"><div className="empty">No customers yet.</div></div>}
+        );
+      }) : <div className="card card-pad"><div className="empty">No customers yet.</div></div>}
 
       <button className="fab round" onClick={() => setShow(true)}><Icon name="customers" size={22} /></button>
 
-      {ledger && <LedgerModal branchId={branchId} name={ledger} onClose={() => setLedger(null)} onSync={shared.onSync} />}
-      {editC && <EditCustomerModal customer={editC} onClose={() => setEditC(null)} onSync={shared.onSync} />}
+      {editC && <EditCustomerNamePhoneModal customer={editC} onClose={() => setEditC(null)} onSync={shared.onSync} />}
       {show && (
         <Modal title="Add customer" onClose={() => setShow(false)}>
           <div className="form-grid">
@@ -1204,96 +1667,209 @@ function Customers({ branchId, shared }: { branchId: string; shared: SharedProps
     </>
   );
 }
+/* ---------- Reports (Range / Day Book — Summary tab removed per request) ---------- */
 function Daybook({ branchId, shared }: { branchId: string; shared: SharedProps }) {
+  const [tab, setTab] = useState<"range" | "daybook">("daybook");
+  return (
+    <>
+      <h1 className="page-title" style={{ fontSize: 24, margin: "0 0 14px" }}>Reports</h1>
+      <div className="seg" style={{ marginBottom: 16 }}>
+        <button className={tab === "range" ? "active" : ""} onClick={() => setTab("range")}>Range</button>
+        <button className={tab === "daybook" ? "active" : ""} onClick={() => setTab("daybook")}>Day Book</button>
+      </div>
+      {tab === "range" ? <RangeReport branchId={branchId} /> : <DayBookReport branchId={branchId} shared={shared} />}
+    </>
+  );
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/* Range tab — quick month-select chips + explicit date range, fetched fresh
+ * from the server (not the capped local 2000-row cache) via fetchRangeFresh,
+ * same helper Owner.tsx's range reports already rely on. */
+function RangeReport({ branchId }: { branchId: string }) {
+  const now = new Date();
+  const toStr = (d: Date) => d.toISOString().slice(0, 10);
+  const [from, setFrom] = useState(toStr(new Date(now.getFullYear(), now.getMonth(), 1)));
+  const [to, setTo] = useState(toStr(now));
+  const [loading, setLoading] = useState(false);
+  const [sales, setSales] = useState<any[]>([]);
+  // Bills (udhaar) for the same window — pulled from the local cache rather
+  // than fetchRangeFresh (which only supports sales/purchases/expenses),
+  // since bill volume per branch is small and always kept in localdb.bills.
+  const allBills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []));
+
+  const load = async (f: string, t: string) => {
+    setLoading(true);
+    try {
+      const fromTs = new Date(f + "T00:00:00").getTime();
+      const toTs = new Date(t + "T23:59:59").getTime();
+      const s = await fetchRangeFresh<any>("sales", fromTs, toTs, [branchId]);
+      setSales(s.filter((x) => !x.deleted_at && !x.void_at));
+    } catch (e: any) {
+      toast("Couldn't load range — " + (e?.message || "check connection"));
+    } finally {
+      setLoading(false);
+    }
+  };
+  // Load on mount with the default (this month) range.
+  useMemo(() => { load(from, to); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const pickMonth = (mIdx: number) => {
+    const year = now.getFullYear();
+    const f = toStr(new Date(year, mIdx, 1));
+    const lastDay = new Date(year, mIdx + 1, 0);
+    const t = toStr(mIdx === now.getMonth() ? now : lastDay);
+    setFrom(f); setTo(t); load(f, t);
+  };
+
+  const salesTotal = sum(sales, "total");
+  // "Received" — same logic as the dashboard: a sale with no linked udhaar
+  // bill was paid in full at billing time (its full total counts); a sale
+  // that DOES have a linked bill only contributes what that bill's `paid`
+  // tracks, summed once per bill_no (not per line) to avoid double-counting
+  // multi-item bills.
+  const rangeBills = useMemo(() => {
+    const fromTs = new Date(from + "T00:00:00").getTime();
+    const toTs = new Date(to + "T23:59:59").getTime();
+    return allBills.filter((b) => { const t = new Date(b.created_at).getTime(); return t >= fromTs && t <= toTs && !b.void_at; });
+  }, [allBills, from, to]);
+  const billNosInRange = new Set(rangeBills.map((b) => b.bill_no));
+  const fullyPaid = sum(sales.filter((s) => !billNosInRange.has(s.bill_no ?? null)), "total");
+  const partialPaid = sum(rangeBills, "paid");
+  const receivedTotal = fullyPaid + partialPaid;
+
+  return (
+    <>
+      <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--muted)", fontWeight: 700, marginBottom: 8 }}>Quick Select Month:</div>
+      <div style={{ display: "flex", gap: 8, overflowX: "auto", marginBottom: 16, paddingBottom: 2 }}>
+        {MONTHS.map((m, i) => (
+          <button key={m} className="pay-opt" style={{ flexShrink: 0, width: "auto", padding: "8px 16px" }} onClick={() => pickMonth(i)}>{m}</button>
+        ))}
+      </div>
+      <div className="card card-pad" style={{ marginBottom: 16 }}>
+        <div className="field" style={{ marginBottom: 10 }}>
+          <label>Date From</label>
+          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} />
+        </div>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label>Date To</label>
+          <input type="date" value={to} onChange={(e) => setTo(e.target.value)} />
+        </div>
+        <button className="btn" style={{ width: "100%", marginTop: 12, padding: 11 }} onClick={() => load(from, to)} disabled={loading}>
+          {loading ? "Loading…" : "Apply"}
+        </button>
+      </div>
+
+      <div className="card card-pad" style={{ marginBottom: 12, position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", right: -20, top: -20, width: 90, height: 90, borderRadius: "50%", background: "var(--surface-4)", opacity: .5 }} />
+        <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", position: "relative" }}>Sales in Range</div>
+        <div style={{ fontSize: 24, fontWeight: 800, color: "var(--accent)", marginTop: 6, position: "relative" }}>{money(salesTotal)}</div>
+      </div>
+      <div className="card card-pad" style={{ position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", right: -20, top: -20, width: 90, height: 90, borderRadius: "50%", background: "var(--green-soft)", opacity: .5 }} />
+        <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".5px", position: "relative" }}>Received in Range</div>
+        <div style={{ fontSize: 24, fontWeight: 800, color: "var(--green)", marginTop: 6, position: "relative" }}>{money(receivedTotal)}</div>
+      </div>
+    </>
+  );
+}
+
+/* Day Book tab — today's bills specifically: how many cut, how much came
+ * in as payment, how much became due, then every bill from today with its
+ * payment status. (Replaces the old generic sales+purchases+expenses feed —
+ * that broader ledger is not needed here per explicit request.) */
+function DayBookReport({ branchId, shared }: { branchId: string; shared: SharedProps }) {
   const today = rangeStart("today");
   const sales = forTotals(useLiveQuery(() => localdb.sales.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const purch = live(useLiveQuery(() => localdb.purchases.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const expenses = live(useLiveQuery(() => localdb.expenses.where("branch_id").equals(branchId).toArray(), [branchId], []));
-  const inT = sum(sales.filter((s) => new Date(s.created_at).getTime() >= today), "total");
-  const outP = sum(purch.filter((s) => new Date(s.created_at).getTime() >= today), "total");
-  const outE = sum(expenses.filter((s) => new Date(s.created_at).getTime() >= today), "amount");
+  const bills = live(useLiveQuery(() => localdb.bills.where("branch_id").equals(branchId).toArray(), [branchId], []));
 
-  const [show, setShow] = useState(false);
-  const [editRow, setEditRow] = useState<{ table: "sales" | "purchases" | "expenses"; row: any } | null>(null);
+  const todaySales = sales.filter((s) => new Date(s.created_at).getTime() >= today);
+  const todayBills = bills.filter((b) => new Date(b.created_at).getTime() >= today && !b.void_at);
+
+  // Expense logging (rent/transport/tea/etc.) moved off the main Day Book
+  // focus (which is now bills/payments/dues, per request) but kept
+  // reachable — staff previously could log these day-to-day and losing
+  // that silently would be a real capability regression.
+  const [showExp, setShowExp] = useState(false);
   const [cat, setCat] = useState("General"); const [note, setNote] = useState(""); const [amt, setAmt] = useState(0);
+  const expCats = ["General", "Transport", "Rent", "Salary", "Electricity", "Tea/Food", "Repair"];
   const saveExp = async () => {
     if (!amt || amt <= 0) return toast("Enter amount");
     await addExpense(branchId, shared.profile.id, cat, note, Number(amt));
     toast("Expense saved" + (shared.online ? "" : " offline"));
-    setShow(false); setNote(""); setAmt(0); setCat("General"); shared.onSync();
-  };
-  const delItem = async (table: "sales" | "purchases" | "expenses", id: string, what: string) => {
-    if (confirmDel(what)) { await softDelete(table, id); toast("Deleted"); shared.onSync(); }
+    setShowExp(false); setNote(""); setAmt(0); setCat("General"); shared.onSync();
   };
 
-  const items = [
-    ...sales.map((s) => ({ table: "sales" as const, id: s.id, row: s, t: s.created_at, label: `Sale · ${s.product_name} × ${s.qty}`, amt: s.total, dir: "in", what: "sale" })),
-    ...purch.map((x) => ({ table: "purchases" as const, id: x.id, row: x, t: x.created_at, label: `Purchase · ${x.product_name} × ${x.qty}`, amt: x.total, dir: "out", what: "purchase" })),
-    ...expenses.map((x) => ({ table: "expenses" as const, id: x.id, row: x, t: x.created_at, label: `Expense · ${x.category}${x.note ? " (" + x.note + ")" : ""}`, amt: x.amount, dir: "out", what: "expense" })),
-  ].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime()).slice(0, 50);
+  // Group today's sales into bills by bill_no (fallback to id) — same
+  // pattern used everywhere else in this app (PreviousBills, Ledger, etc).
+  const groups = useMemo(() => {
+    const map = new Map<string, { billNo: string; customer: string; total: number; pay: string; t: string; items: number }>();
+    for (const s of todaySales) {
+      const key = s.bill_no || s.id;
+      if (!map.has(key)) map.set(key, { billNo: key, customer: s.customer_name || "Walk-in", total: 0, pay: s.payment_mode || "cash", t: s.created_at, items: 0 });
+      const g = map.get(key)!;
+      g.total += s.total; g.items += 1;
+    }
+    return [...map.values()].sort((a, b) => new Date(b.t).getTime() - new Date(a.t).getTime());
+  }, [todaySales]);
 
-  const cats = ["General", "Transport", "Rent", "Salary", "Electricity", "Tea/Food", "Repair"];
-  const net = inT - outP - outE;
-  const icons: Record<string, string> = { sale: "bill", purchase: "cart", expense: "wallet" };
+  const billNosToday = new Set(todayBills.map((b) => b.bill_no));
+  const receivedToday = sum(groups.filter((g) => !billNosToday.has(g.billNo)), "total") + sum(todayBills, "paid");
+  const duesToday = sum(todayBills.filter((b) => b.status === "unpaid"), "due_amount");
+
+  const statusFor = (g: (typeof groups)[number]) => {
+    const bill = todayBills.find((b) => b.bill_no === g.billNo);
+    if (!bill) return { label: "Paid", cls: "ok" };
+    return bill.status === "unpaid" ? { label: "Due " + money(bill.due_amount), cls: "warn" } : { label: "Paid", cls: "ok" };
+  };
+
   return (
     <>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
-        <div><h1 className="page-title" style={{ fontSize: 20, margin: 0 }}>Day Book</h1><p className="page-sub" style={{ margin: "2px 0 0" }}>Today, {dateStr(Date.now())}</p></div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+        <div style={{ fontSize: 13, color: "var(--muted)" }}>Today, {dateStr(Date.now())}</div>
+        <button className="edit-btn" onClick={() => setShowExp(true)}>+ Expense</button>
       </div>
-      <div className="bento" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 16 }}>
-        <div style={{ gridColumn: "1 / -1", background: "var(--accent)", color: "#fff", borderRadius: 14, padding: 18 }}>
-          <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".6px", opacity: .85, fontWeight: 700 }}>Net Balance</span>
-          <div style={{ fontSize: 28, fontWeight: 800, marginTop: 6 }}>{money(net)}</div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+        <div className="card card-pad" style={{ gridColumn: "1 / -1", background: "var(--accent)", color: "#fff" }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: ".5px", opacity: .85, fontWeight: 700 }}>Bills Cut Today</div>
+          <div style={{ fontSize: 26, fontWeight: 800, marginTop: 6 }}>{groups.length}</div>
         </div>
-        <div className="stat">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span className="label">Cash In</span>
-            <div style={{ width: 26, height: 26, borderRadius: "50%", background: "var(--green-soft)", color: "var(--green)", display: "grid", placeItems: "center" }}><Icon name="plus" size={13} /></div>
-          </div>
-          <div className="value" style={{ color: "var(--green)", fontSize: 18, marginTop: 8 }}>{money(inT)}</div>
+        <div className="card card-pad">
+          <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase" }}>Payment Received</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "var(--green)", marginTop: 6 }}>{money(receivedToday)}</div>
         </div>
-        <div className="stat">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <span className="label">Cash Out</span>
-            <div style={{ width: 26, height: 26, borderRadius: "50%", background: "var(--red-soft)", color: "var(--red)", display: "grid", placeItems: "center" }}><Icon name="minus" size={13} /></div>
-          </div>
-          <div className="value" style={{ color: "var(--red)", fontSize: 18, marginTop: 8 }}>{money(outP + outE)}</div>
+        <div className="card card-pad">
+          <div style={{ fontSize: 11, color: "var(--muted)", textTransform: "uppercase" }}>Dues Created</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: duesToday > 0 ? "var(--red)" : "var(--green)", marginTop: 6 }}>{money(duesToday)}</div>
         </div>
       </div>
 
-      <h3 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--muted)", margin: "0 0 8px" }}>All Transactions</h3>
-      {items.length ? items.map((i) => (
-        <div className="card card-pad" key={i.id} style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 44, height: 44, borderRadius: 10, background: "var(--surface-3)", color: i.dir === "in" ? "var(--accent)" : "var(--amber)", display: "grid", placeItems: "center", flexShrink: 0 }}>
-            <Icon name={icons[i.what] || "bill"} size={18} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <div className="main" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{i.label}</div>
-              <b style={{ color: i.dir === "in" ? "var(--green)" : "var(--red)", flexShrink: 0 }}>{i.dir === "in" ? "+" : "−"}{money(i.amt)}</b>
+      <h3 style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: ".5px", color: "var(--muted)", margin: "16px 0 8px" }}>Today's Bills</h3>
+      {groups.length ? groups.map((g) => {
+        const status = statusFor(g);
+        return (
+          <div className="card card-pad" key={g.billNo} style={{ marginBottom: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div className="main" style={{ fontWeight: 700 }}>{g.billNo.startsWith(g.customer) ? g.billNo : `Bill #${g.billNo}`}</div>
+              <div className="sub">{g.customer} · {timeStr(g.t)} · {g.items} item{g.items === 1 ? "" : "s"} · {g.pay.toUpperCase()}</div>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 3 }}>
-              <span className="sub">{dateStr(i.t)} · {timeStr(i.t)}</span>
-              <div style={{ display: "flex", gap: 6 }}>
-                <button className="edit-btn" style={{ padding: "3px 8px", fontSize: 11 }} onClick={() => setEditRow({ table: i.table, row: i.row })}>Edit</button>
-                <button className="del-btn" style={{ width: 22, height: 22 }} onClick={() => delItem(i.table, i.id, i.what)}><Icon name="trash" size={11} /></button>
-              </div>
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontWeight: 700 }}>{money(g.total)}</div>
+              <span className={"status-pill " + status.cls} style={{ marginTop: 2, display: "inline-block" }}>{status.label}</span>
             </div>
           </div>
-        </div>
-      )) : <div className="card card-pad"><div className="empty">No entries.</div></div>}
+        );
+      }) : <div className="card card-pad"><div className="empty">No bills cut yet today.</div></div>}
 
-      <button className="fab round" style={{ background: "var(--red)" }} onClick={() => setShow(true)}><Icon name="plus" size={22} /></button>
-
-      {editRow && <EditEntryModal table={editRow.table} row={editRow.row} onClose={() => setEditRow(null)} onSync={shared.onSync} />}
-      {show && (
-        <Modal title="Add expense" onClose={() => setShow(false)}>
+      {showExp && (
+        <Modal title="Add expense" onClose={() => setShowExp(false)}>
           <div className="form-grid">
             <div className="field"><label>Category</label>
-              <select value={cat} onChange={(e) => setCat(e.target.value)}>{cats.map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
+              <select value={cat} onChange={(e) => setCat(e.target.value)}>{expCats.map((c) => <option key={c} value={c}>{c}</option>)}</select></div>
             <div className="field"><label>Note (optional)</label><input value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. Sumo fare to Seppa" /></div>
             <div className="field"><label>Amount</label><input type="number" inputMode="numeric" value={amt || ""} onChange={(e) => setAmt(+e.target.value)} /></div>
-            <div className="btn-row"><button className="btn ghost" onClick={() => setShow(false)}>Cancel</button><button className="btn" onClick={saveExp}>Save expense</button></div>
+            <div className="btn-row"><button className="btn ghost" onClick={() => setShowExp(false)}>Cancel</button><button className="btn" onClick={saveExp}>Save expense</button></div>
           </div>
         </Modal>
       )}

@@ -119,6 +119,47 @@ export function EditBillGroupModal({ group, branchId, onClose, onSync }: { group
   );
 }
 
+/** Edit a whole purchase invoice (all purchases rows sharing one invoice_no)
+ *  — mirrors EditBillGroupModal, but simpler: there's no linked udhaar bill
+ *  to reconcile, so saving each line's qty/cost is all that's needed. */
+export function EditPurchaseGroupModal({ group, onClose, onSync }: { group: { invoiceNo: string; items: Purchase[] }; onClose: () => void; onSync: () => void }) {
+  const supplier = group.items[0]?.supplier || "—";
+  const [lines, setLines] = useState(group.items.map((p) => ({ id: p.id, name: p.product_name, qty: p.qty, cost: p.cost, row: p })));
+
+  const setLine = (i: number, patch: Partial<{ qty: number; cost: number }>) =>
+    setLines((ls) => ls.map((l, k) => k === i ? { ...l, ...patch } : l));
+
+  const save = async () => {
+    if (!lines.length) return;
+    if (lines.some((l) => l.qty <= 0)) return toast("Every item needs a quantity greater than 0");
+    for (const l of lines) {
+      await saveEdit("purchases", { ...l.row, qty: Number(l.qty), cost: Number(l.cost), total: Number(l.qty) * Number(l.cost) });
+    }
+    toast("Purchase updated"); onClose(); onSync();
+  };
+
+  const total = lines.reduce((a, l) => a + l.qty * l.cost, 0);
+
+  return (
+    <Modal title={`Edit purchase ${group.invoiceNo}`} onClose={onClose}>
+      <div className="form-grid">
+        <div className="field" style={{ color: "var(--muted)", fontSize: 13 }}>Supplier: <b style={{ color: "var(--text)" }}>{supplier}</b></div>
+        {lines.map((l, i) => (
+          <div key={l.id} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: 10 }}>
+            <div style={{ color: "var(--muted)", fontSize: 13, marginBottom: 6, fontWeight: 600 }}>{l.name}</div>
+            <div className="qty-row">
+              <div className="field"><label>Qty</label><input type="number" inputMode="numeric" min={1} value={l.qty} onChange={(e) => setLine(i, { qty: +e.target.value })} /></div>
+              <div className="field"><label>Cost</label><input type="number" inputMode="numeric" value={l.cost} onChange={(e) => setLine(i, { cost: +e.target.value })} /></div>
+            </div>
+          </div>
+        ))}
+        <div className="total-preview">Total: {money(total)}</div>
+        <div className="btn-row"><button className="btn ghost" onClick={onClose}>Cancel</button><button className="btn" onClick={save}>Save changes</button></div>
+      </div>
+    </Modal>
+  );
+}
+
 export function EditBillModal({ bill, onClose, onSync }: { bill: Bill; onClose: () => void; onSync: () => void }) {
   const [amount, setAmount] = useState(bill.amount);
   const [paid, setPaid] = useState(bill.paid);

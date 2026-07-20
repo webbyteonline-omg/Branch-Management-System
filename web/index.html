@@ -4,8 +4,11 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <meta name="theme-color" content="#4f46e5" />
+    <meta name="theme-color" content="#0037b0" />
     <title>Branch Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Work+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root">
@@ -13,15 +16,15 @@
            JS bundle finishes parsing/hydrating. Removed automatically the
            moment React mounts (see main.tsx). Keeps the same look as
            SplashScreen.tsx so there's no visible flash/swap between the two. -->
-      <div id="boot-splash" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#f9f9ff;">
-        <div style="border-radius:20px;animation:bootPulse 1.6s ease-in-out infinite;filter:drop-shadow(0 6px 16px rgba(79,70,229,.25));">
+      <div id="boot-splash" style="min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;background:#f8f9ff;">
+        <div style="border-radius:20px;animation:bootPulse 1.6s ease-in-out infinite;filter:drop-shadow(0 6px 16px rgba(0,55,176,.25));">
           <svg width="72" height="72" viewBox="0 0 512 512">
-            <rect width="512" height="512" rx="96" fill="#4f46e5"/>
+            <rect width="512" height="512" rx="96" fill="#0037b0"/>
             <path d="M128 340V220l128-84 128 84v120a16 16 0 0 1-16 16h-72v-96h-80v96h-72a16 16 0 0 1-16-16z" fill="#ffffff"/>
-            <circle cx="256" cy="150" r="26" fill="#c7d2fe"/>
+            <circle cx="256" cy="150" r="26" fill="#dce1ff"/>
           </svg>
         </div>
-        <div style="font-size:16px;font-weight:700;color:#151c27;letter-spacing:-.2px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">BranchManager</div>
+        <div style="font-size:16px;font-weight:700;color:#0b1c30;letter-spacing:-.2px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">BranchManager</div>
       </div>
       <style>@keyframes bootPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}</style>
     </div>
