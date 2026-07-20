@@ -7,7 +7,6 @@ import { toast } from "./Toast";
 import { Modal } from "./Modal";
 import { CustomerLedgerPage } from "./Ledger";
 import { EditBillModal, EditBillGroupModal, EditPurchaseGroupModal } from "./Edits";
-import { SyncStatusModal } from "./SyncStatus";
 import { addCustomer, addBill, recordBillPayment, addExpense, softDelete, saveEdit, createSaleBill, createPurchaseInvoice, computeLineTotal, settleCustomerDues, saveProduct, voidBill, voidSaleGroup, ensureCustomer, setCustomerActive, addStockAdjustment, type CartItem } from "../lib/writes";
 import { sum, live, forTotals, computeStock, productsForBranch, type SharedProps } from "./shared";
 import { BarChart } from "./Charts";
@@ -22,7 +21,6 @@ type Tab = "dashboard" | "sale" | "purchase" | "unpaid" | "previous" | "customer
 export function Staff(p: SharedProps) {
   const [tab, setTab] = useState<Tab>("dashboard");
   const [showMenu, setShowMenu] = useState(false);
-  const [showSync, setShowSync] = useState(false);
   const branchId = p.profile.branch_id!;
   const branches = useLiveQuery(() => localdb.branches.toArray(), [], []);
   const branchName = branches.find((b) => b.id === branchId)?.name ?? "My Branch";
@@ -47,35 +45,15 @@ export function Staff(p: SharedProps) {
 
   return (
     <>
+      {/* Staff never sees sync state at all — every save is stored locally
+          immediately and pushed to Head Office silently in the background.
+          Nothing to look at, nothing that can go wrong from their side. */}
       <div className="mobile-top" style={{ background: "var(--surface)" }}>
         <div className="actions">
           <button className="icon-btn" onClick={() => setShowMenu(true)}><Icon name="menu" size={22} /></button>
           <b style={{ fontSize: 15.5, fontWeight: 700, lineHeight: 1.1 }}>{branchName}</b>
         </div>
-        <div className="actions">
-          {p.syncError ? (
-            <button className="sync-pill pending" style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync issue — tap for details">
-              <span className="dot" />Sync issue
-            </button>
-          ) : (
-            <button
-              className="icon-btn"
-              disabled={!p.online || p.syncing}
-              onClick={() => p.onSync()}
-              title="Sync now"
-              style={{ display: "flex", alignItems: "center", gap: 6, width: "auto", padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 10, fontSize: 12.5, fontWeight: 600, color: "var(--accent)" }}
-            >
-              <Icon name="sync" size={15} style={p.syncing ? { animation: "spin 0.8s linear infinite" } : undefined} />
-              {p.syncing ? "Syncing…" : "Sync"}
-            </button>
-          )}
-        </div>
       </div>
-      {p.syncError && (
-        <div style={{ background: "var(--red-soft)", color: "var(--red)", fontSize: 12.5, padding: "8px 16px", textAlign: "center", fontWeight: 600 }}>
-          ⚠ Some entries aren't reaching Head Office yet. They're saved safely on this device — {p.syncError}
-        </div>
-      )}
       <div className="m-content">
         {tab === "dashboard" && <StaffDashboard branchId={branchId} branchName={branchName} shared={p} go={go} />}
         {tab === "sale" && <BillingScreen branchId={branchId} shared={p} branchName={branchName} />}
@@ -127,7 +105,6 @@ export function Staff(p: SharedProps) {
           </div>
         </div>
       )}
-      {showSync && <SyncStatusModal shared={p} onClose={() => setShowSync(false)} />}
     </>
   );
 }

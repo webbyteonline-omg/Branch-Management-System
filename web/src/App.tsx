@@ -72,31 +72,28 @@ export function App() {
   }, []);
 
   // ---- sync: push pending, then pull fresh ----
-  // Tracks the last-seen error signature so a persistent failure (e.g. the
-  // app was updated but the database schema wasn't) surfaces once clearly
-  // instead of either spamming a toast every 20s or — the old bug — staying
-  // completely silent while data never reaches Head Office.
-  const lastSyncErrorRef = useRef<string | null>(null);
+  // Completely silent for staff — no banners, no toasts, no error text. Every
+  // save already lands on the device instantly, and this pushes it to Head
+  // Office in the background; if a push fails (bad data, offline, etc.) it's
+  // logged to the console and retried later — never shown on screen. Staff
+  // should never have to think about "sync" at all.
+  // For the owner, `syncError` is still tracked (used only by Owner.tsx's own
+  // small "Sync issue" pill) so a genuinely stuck entry is still discoverable
+  // by whoever manages the data, without staff ever seeing it.
   const sync = useCallback(async () => {
     if (!profile || !navigator.onLine) return;
     setSyncing(true);
     try {
-      const { pushed, errors } = await pushPending();
+      const { errors } = await pushPending();
       if (errors.length > 0) {
         const msg = `${errors[0].table}: ${errors[0].cause?.message || "sync failed"}`;
         setSyncError(msg);
-        const sig = errors.map((e) => e.table + ":" + e.message).join("|");
-        if (sig !== lastSyncErrorRef.current) {
-          lastSyncErrorRef.current = sig;
-          toast(`Sync problem: ${errors[0].table} didn't save to Head Office (${errors[0].cause?.message || "unknown error"}). Entry stays saved on this device.`);
-        }
+        console.error("[sync] push failed:", errors);
       } else {
         setSyncError(null);
-        lastSyncErrorRef.current = null;
       }
       await pullAll(profile);
       setLastSyncedAt(new Date().toISOString());
-      if (pushed > 0) toast(`${pushed} entr${pushed === 1 ? "y" : "ies"} synced to Head Office`);
     } catch (e) {
       console.error("[sync] unexpected failure:", e);
     } finally {
@@ -104,16 +101,15 @@ export function App() {
     }
   }, [profile]);
 
-  // Sync happens exactly once automatically — right after login/app-open, so
-  // the app opens with fresh data — and otherwise ONLY when the user taps the
-  // manual "Sync" button (see the header button wired to shared.onSync).
-  // No realtime subscription, no background polling: kept deliberately simple
-  // and predictable for a production business tool.
-  const didInitialSync = useRef(false);
+  // Auto-sync in the background: once right after login/app-open, then every
+  // 30s while the app is open, so entries reach Head Office without anyone
+  // ever having to tap anything. Admin's "Refresh" button (Owner.tsx) still
+  // works on top of this for an on-demand pull.
   useEffect(() => {
-    if (!profile || didInitialSync.current) return;
-    didInitialSync.current = true;
+    if (!profile) return;
     sync();
+    const id = setInterval(() => { if (navigator.onLine) sync(); }, 30_000);
+    return () => clearInterval(id);
   }, [profile, sync]);
 
   const logout = async () => { await supabase.auth.signOut(); };

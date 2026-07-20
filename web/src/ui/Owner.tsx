@@ -208,7 +208,7 @@ export function Owner(p: SharedProps) {
                 style={{ display: "flex", alignItems: "center", gap: 6, width: "auto", padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 10, fontSize: 12.5, fontWeight: 600, color: "var(--accent)", flexShrink: 0 }}
               >
                 <Icon name="sync" size={15} style={p.syncing ? { animation: "spin 0.8s linear infinite" } : undefined} />
-                <span className="hide-mobile">{p.syncing ? "Syncing…" : "Sync"}</span>
+                <span className="hide-mobile">{p.syncing ? "Refreshing…" : "Refresh"}</span>
               </button>
             )}
             <button className="btn" style={{ width: "auto", padding: "9px 14px", borderRadius: 999, flexShrink: 0 }} onClick={p.onLogout}>Logout</button>
