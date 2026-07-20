@@ -195,9 +195,20 @@ export function Owner(p: SharedProps) {
              * offline toggle, no routine sync status. The only thing shown
              * here is a small warning, and only when there's an actual
              * problem (a save hasn't reached the server after a while). */}
-            {p.syncError && (
+            {p.syncError ? (
               <button className="sync-pill pending" style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync problem — tap for details">
                 <span className="dot" /><span className="hide-mobile">Sync issue</span>
+              </button>
+            ) : (
+              <button
+                className="icon-btn"
+                disabled={!p.online || p.syncing}
+                onClick={() => p.onSync()}
+                title="Sync now"
+                style={{ display: "flex", alignItems: "center", gap: 6, width: "auto", padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 10, fontSize: 12.5, fontWeight: 600, color: "var(--accent)", flexShrink: 0 }}
+              >
+                <Icon name="sync" size={15} style={p.syncing ? { animation: "spin 0.8s linear infinite" } : undefined} />
+                <span className="hide-mobile">{p.syncing ? "Syncing…" : "Sync"}</span>
               </button>
             )}
             <button className="btn" style={{ width: "auto", padding: "9px 14px", borderRadius: 999, flexShrink: 0 }} onClick={p.onLogout}>Logout</button>

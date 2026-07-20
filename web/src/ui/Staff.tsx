@@ -53,9 +53,20 @@ export function Staff(p: SharedProps) {
           <b style={{ fontSize: 15.5, fontWeight: 700, lineHeight: 1.1 }}>{branchName}</b>
         </div>
         <div className="actions">
-          {p.syncError && (
+          {p.syncError ? (
             <button className="sync-pill pending" style={{ border: "none" }} onClick={() => setShowSync(true)} title="Sync issue — tap for details">
               <span className="dot" />Sync issue
+            </button>
+          ) : (
+            <button
+              className="icon-btn"
+              disabled={!p.online || p.syncing}
+              onClick={() => p.onSync()}
+              title="Sync now"
+              style={{ display: "flex", alignItems: "center", gap: 6, width: "auto", padding: "6px 12px", border: "1px solid var(--line)", borderRadius: 10, fontSize: 12.5, fontWeight: 600, color: "var(--accent)" }}
+            >
+              <Icon name="sync" size={15} style={p.syncing ? { animation: "spin 0.8s linear infinite" } : undefined} />
+              {p.syncing ? "Syncing…" : "Sync"}
             </button>
           )}
         </div>
@@ -374,8 +385,10 @@ function StaffProducts({ branchId, shared }: { branchId: string; shared: SharedP
 
   const save = async () => {
     if (!edit?.name?.trim()) return toast("Enter a product name");
-    // Staff can only own products scoped to their branch — never the shared "all branches" catalog.
-    await saveProduct({ ...edit, branch_id: branchId } as any, branchId);
+    // Staff can only own products scoped to their branch — never the shared "all branches"
+    // catalog. Only stamp branch_id on brand-new products; an existing row's branch_id is
+    // never touched here (editing a shared product is blocked below, before this can run).
+    await saveProduct({ ...edit, branch_id: edit.id ? edit.branch_id : branchId } as any, branchId);
     toast("Product saved" + (shared.online ? "" : " offline")); setEdit(null); shared.onSync();
   };
   // Soft-delete: the same mechanism every other delete in this app uses
@@ -405,7 +418,14 @@ function StaffProducts({ branchId, shared }: { branchId: string; shared: SharedP
           <div key={pr.id} className="card card-pad" style={{ marginBottom: 10 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
               <div style={{ fontWeight: 700, fontSize: 16 }}>{pr.name}{pr._synced === 0 ? " · ⏳" : ""}</div>
-              <button className="icon-btn" style={{ width: 40, height: 40, border: "1px solid var(--accent)", borderRadius: 10, color: "var(--accent)" }} onClick={() => setEdit({ ...pr })}><Icon name="settings" size={16} /></button>
+              {/* Shared (all-branch) catalog products are owner-managed only — editing them
+                  here would fail server-side (RLS) since their branch_id is null, which can
+                  never equal a staff member's own branch. */}
+              {pr.branch_id ? (
+                <button className="icon-btn" style={{ width: 40, height: 40, border: "1px solid var(--accent)", borderRadius: 10, color: "var(--accent)" }} onClick={() => setEdit({ ...pr })}><Icon name="settings" size={16} /></button>
+              ) : (
+                <span style={{ fontSize: 10.5, color: "var(--faint)", padding: "4px 8px" }}>Shared</span>
+              )}
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginTop: 12, paddingBottom: 10, borderBottom: "1px solid var(--line-2)" }}>
               <div>
@@ -417,9 +437,11 @@ function StaffProducts({ branchId, shared }: { branchId: string; shared: SharedP
                 <div style={{ fontSize: 18, fontWeight: 700 }}>{money(pr.sale_price)}</div>
               </div>
             </div>
-            <button className="btn ghost" style={{ width: "100%", marginTop: 10, padding: "8px 0", color: "var(--red)", borderColor: "var(--red)", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={() => delProd(pr)}>
-              <Icon name="trash" size={14} /> Delete
-            </button>
+            {pr.branch_id && (
+              <button className="btn ghost" style={{ width: "100%", marginTop: 10, padding: "8px 0", color: "var(--red)", borderColor: "var(--red)", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }} onClick={() => delProd(pr)}>
+                <Icon name="trash" size={14} /> Delete
+              </button>
+            )}
           </div>
         );
       }) : <div className="card card-pad"><div className="empty">{products.length ? "No products match your search." : "No products yet for this branch."}</div></div>}

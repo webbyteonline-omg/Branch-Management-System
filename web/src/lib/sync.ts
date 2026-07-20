@@ -116,47 +116,8 @@ export async function pushPending(): Promise<{ pushed: number; errors: SyncError
 }
 type SyncTableName = "sales" | "purchases" | "customers" | "bills" | "expenses" | "products" | "payments";
 
-/** Live updates so the owner's dashboard reflects branch activity instantly.
- *  Every insert/update/delete from any device is written into the local store,
- *  and Dexie's live queries re-render the UI within a second — no refresh.
- *  Reconnects automatically if the socket drops (flaky mountain internet) —
- *  Supabase channels don't always self-heal after a network blip. */
-export function subscribeRealtime(onChange: () => void) {
-  const tables: Record<string, any> = {
-    sales: localdb.sales, purchases: localdb.purchases, bills: localdb.bills,
-    expenses: localdb.expenses, customers: localdb.customers, products: localdb.products,
-    payments: localdb.payments,
-  };
-  let ch: ReturnType<typeof supabase.channel> | null = null;
-  let stopped = false;
-  let retryTimer: ReturnType<typeof setTimeout> | null = null;
-
-  const connect = () => {
-    if (stopped) return;
-    ch = supabase.channel("branch-activity-" + Date.now());
-    for (const [name, table] of Object.entries(tables)) {
-      ch.on("postgres_changes", { event: "*", schema: "public", table: name }, async (p) => {
-        try {
-          if (p.eventType === "DELETE" && (p.old as any)?.id) await table.delete((p.old as any).id);
-          else if ((p.new as any)?.id) await table.put({ ...(p.new as any), _synced: 1 });
-        } catch { /* ignore */ }
-        onChange();
-      });
-    }
-    ch.subscribe((status) => {
-      if (stopped) return;
-      if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-        // Drop and reconnect after a short delay instead of staying dead silently.
-        if (ch) supabase.removeChannel(ch);
-        retryTimer = setTimeout(connect, 4000);
-      }
-    });
-  };
-  connect();
-
-  return () => {
-    stopped = true;
-    if (retryTimer) clearTimeout(retryTimer);
-    if (ch) supabase.removeChannel(ch);
-  };
-}
+// Note: this app deliberately does NOT use realtime/websocket sync. Every
+// screen syncs once automatically on login/app-open, and otherwise only when
+// the user taps the manual "Sync" button (pushPending + pullAll above). Kept
+// simple on purpose for a production business tool — no background socket to
+// babysit, no silent partial-sync states.

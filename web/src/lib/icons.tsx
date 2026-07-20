@@ -1,3 +1,5 @@
+import type { CSSProperties } from "react";
+
 const paths: Record<string, string> = {
   dashboard: "M3 3h8v8H3zM13 3h8v5h-8zM13 10h8v11h-8zM3 13h8v8H3z",
   branch: "M3 21h18M5 21V8l7-5 7 5v13M9 21v-6h6v6",
@@ -43,10 +45,10 @@ const paths: Record<string, string> = {
   whatsapp: "M17.5 14.4c-.3-.1-1.6-.8-1.9-.9-.2-.1-.4-.1-.6.1-.2.3-.7.9-.8 1-.2.2-.3.2-.5.1-.3-.1-1.2-.4-2.2-1.4-.8-.7-1.4-1.6-1.5-1.9-.2-.3 0-.4.1-.6l.4-.5c.1-.1.2-.3.2-.4.1-.2 0-.3 0-.5-.1-.1-.6-1.5-.8-2-.2-.5-.4-.4-.6-.4h-.5c-.2 0-.5.1-.7.3-.3.3-1 1-1 2.4s1 2.8 1.2 3c.1.2 2 3 4.8 4.3.7.3 1.2.5 1.6.6.7.2 1.3.2 1.8.1.5-.1 1.6-.7 1.9-1.3.2-.6.2-1.1.2-1.3z" + "M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2z",
 };
 
-export function Icon({ name, size = 19, className }: { name: string; size?: number; className?: string }) {
+export function Icon({ name, size = 19, className, style }: { name: string; size?: number; className?: string; style?: CSSProperties }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" className={className}>
+      strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
       {(paths[name] || "").split("M").filter(Boolean).map((d, i) => <path key={i} d={"M" + d} />)}
     </svg>
   );

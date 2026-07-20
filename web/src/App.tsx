@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 import { ensureDbReady } from "./lib/db";
-import { pullAll, pushPending, subscribeRealtime } from "./lib/sync";
+import { pullAll, pushPending } from "./lib/sync";
 import type { Profile } from "./lib/types";
 import { Login } from "./ui/Login";
 import { Owner } from "./ui/Owner";
@@ -104,32 +104,17 @@ export function App() {
     }
   }, [profile]);
 
-  useEffect(() => { if (profile) sync(); }, [profile, sync]);
-  useEffect(() => { if (online) sync(); }, [online, sync]);
-
-  // ---- realtime (writes into local store; live UI updates) ----
+  // Sync happens exactly once automatically — right after login/app-open, so
+  // the app opens with fresh data — and otherwise ONLY when the user taps the
+  // manual "Sync" button (see the header button wired to shared.onSync).
+  // No realtime subscription, no background polling: kept deliberately simple
+  // and predictable for a production business tool.
+  const didInitialSync = useRef(false);
   useEffect(() => {
-    if (!profile) return;
-    return subscribeRealtime(() => {});
-  }, [profile]);
-
-  // Safety net: mountain internet drops WebSockets silently sometimes, and a
-  // dropped Realtime channel doesn't always self-heal. A light background
-  // pull every 20s keeps the owner's dashboard correct even if the live
-  // socket died, with no visible delay for the user.
-  useEffect(() => {
-    if (!profile) return;
-    const id = setInterval(() => { if (navigator.onLine) sync(); }, 20_000);
-    return () => clearInterval(id);
+    if (!profile || didInitialSync.current) return;
+    didInitialSync.current = true;
+    sync();
   }, [profile, sync]);
-
-  // Also re-sync whenever the tab regains focus/visibility — covers the
-  // common case of switching apps and coming back.
-  useEffect(() => {
-    const onVis = () => { if (document.visibilityState === "visible") sync(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => document.removeEventListener("visibilitychange", onVis);
-  }, [sync]);
 
   const logout = async () => { await supabase.auth.signOut(); };
 
